@@ -10,6 +10,7 @@ MODEL_NAME = "Vamsi/T5_Paraphrase_Paws"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).to("cuda" if torch.cuda.is_available() else "cpu")
 
+
 def generate_t5(text: str, num_return_sequences: int = 5) -> list[str]:
     """Generate multiple unique paraphrases using T5 model with controlled sampling."""
     prompt = "paraphrase: " + text + " </s>"
@@ -44,6 +45,7 @@ def generate_t5(text: str, num_return_sequences: int = 5) -> list[str]:
 
     return unique_sentences[:num_return_sequences]
 
+
 # ----------------------------
 # Character-Level Perturbations
 # ----------------------------
@@ -53,12 +55,15 @@ def keyboard_typo(text: str) -> str:
     i = random.randint(0, len(text) - 1)
     return text[:i] + random.choice("abcdefghijklmnopqrstuvwxyz") + text[i+1:]
 
+
 def ocr_error(text: str) -> str:
     ocr_map = {"o": "0", "l": "1", "i": "1", "e": "3", "a": "@"}
     return "".join(ocr_map.get(c, c) for c in text)
 
+
 def concat_insertion(text: str) -> str:
     return text.replace(" ", "")
+
 
 def char_replacement(text: str) -> str:
     if not text:
@@ -66,17 +71,20 @@ def char_replacement(text: str) -> str:
     i = random.randint(0, len(text) - 1)
     return text[:i] + random.choice("abcdefghijklmnopqrstuvwxyz") + text[i+1:]
 
+
 def char_swap(text: str) -> str:
     if len(text) < 2:
         return text
     i = random.randint(0, len(text) - 2)
     return text[:i] + text[i+1] + text[i] + text[i+2:]
 
+
 def char_delete(text: str) -> str:
     if not text:
         return text
     i = random.randint(0, len(text) - 1)
     return text[:i] + text[i+1:]
+
 
 # ----------------------------
 # Word-Level Perturbations
@@ -88,11 +96,25 @@ def word_swap(text: str) -> str:
         words[i], words[j] = words[j], words[i]
     return " ".join(words)
 
+
 def word_delete(text: str) -> str:
     words = text.split()
     if words:
         words.pop(random.randrange(len(words)))
     return " ".join(words)
+
+
+def all_word_deletions(text: str) -> list[str]:
+    """Return n deletion results for a prompt with n words — each missing one word."""
+    words = text.split()
+    if not words:
+        return []
+    results = []
+    for i in range(len(words)):
+        deleted = " ".join(words[:i] + words[i+1:])
+        results.append(deleted)
+    return results
+
 
 def insert_punctuation(text: str) -> str:
     words = text.split()
@@ -102,12 +124,14 @@ def insert_punctuation(text: str) -> str:
     words[idx] += random.choice(["?", "!", ",", "."])
     return " ".join(words)
 
+
 # ----------------------------
 # Sentence-Level Perturbations (Only 5 unique paraphrases)
 # ----------------------------
 def paraphrases(text: str) -> dict:
     generated = generate_t5(text, num_return_sequences=5)
     return {f"paraphrase{i}": p for i, p in enumerate(generated)}
+
 
 # ----------------------------
 # Main Pipeline
@@ -124,8 +148,14 @@ def generate_perturbations(text: str) -> dict:
         "wd": word_delete(text),
         "ip": insert_punctuation(text),
     }
+    # Add deletion variants
+    deletion_variants = all_word_deletions(text)
+    for i, variant in enumerate(deletion_variants):
+        perturbations[f"wd_all_{i}"] = variant
+
     perturbations.update(paraphrases(text))
     return perturbations
+
 
 def save_to_csv(original_text: str, perturbations: dict, filename="perturbations.csv"):
     headers = ["original"] + list(perturbations.keys())
@@ -134,6 +164,7 @@ def save_to_csv(original_text: str, perturbations: dict, filename="perturbations
         writer.writerow(headers)
         row = [original_text] + list(perturbations.values())
         writer.writerow(row)
+
 
 if __name__ == "__main__":
     sentence = "take the broccoli out of the pan"
