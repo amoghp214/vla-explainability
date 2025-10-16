@@ -12,7 +12,12 @@ Usage:
         --model openvla \
         --bddl_file /path/to/custom_scene.bddl \
         --out_file /path/to/output/demo.hdf5 \
-        --prompt "move the phone to the left of the table"
+        --prompt "move the phone to the left of the table" \
+        --task_suite_name libero_spatial \
+        --cache_dir /path/to/cache
+
+Note: This implementation follows the OpenVLA LIBERO evaluation script from:
+    https://github.com/openvla/openvla/blob/main/experiments/robot/libero/run_libero_eval.py
 """
 
 import os
@@ -27,8 +32,30 @@ from transformers import AutoModelForVision2Seq, AutoProcessor
 
 from libero.libero.envs import OffScreenRenderEnv
 
-LINEAR_SCALE_FACTOR = 10
-ANGULAR_SCALE_FACTOR = 10
+
+def normalize_gripper_action(action, binarize=True):
+    """
+    Normalize gripper action from [0,1] to [-1,+1] because LIBERO expects the latter.
+    
+    Args:
+        action: Action array where the last dimension is the gripper action
+        binarize: If True, binarize the gripper action to -1 or +1
+    """
+    # Normalize gripper action to [-1, +1]
+    action[-1] = 2.0 * action[-1] - 1.0
+    if binarize:
+        action[-1] = 1.0 if action[-1] > 0 else -1.0
+    return action
+
+
+def invert_gripper_action(action):
+    """
+    Invert gripper action sign.
+    OpenVLA's dataloader flips the sign to align with other datasets (0=close, 1=open),
+    so we flip it back (-1=open, +1=close) before executing in LIBERO.
+    """
+    action[-1] = -action[-1]
+    return action
 
 
 def load_openvla(device="cuda:0", cache_dir=None):
@@ -47,14 +74,24 @@ def load_openvla(device="cuda:0", cache_dir=None):
     return processor, vla
 
 
-def record_demo(bddl_file, out_file, model_flag="openvla", prompt=None, device="cuda:0", cache_dir=None):
+def record_demo(bddl_file, out_file, model_flag="openvla", prompt=None, task_suite_name="libero_spatial", 
+                device="cuda:0", cache_dir=None):
     """
     Record a single demo using a VLA model and save it to HDF5.
+    
+    Args:
+        bddl_file: Path to BDDL file
+        out_file: Path to save HDF5 demo
+        model_flag: Model to use (only 'openvla' supported)
+        prompt: Task instruction
+        task_suite_name: LIBERO task suite name (used for action unnormalization)
+        device: Device to run model on
+        cache_dir: Cache directory for model weights
     """
     env_args = {
         "bddl_file_name": bddl_file,
-        "camera_heights": 512,
-        "camera_widths": 512,
+        "camera_heights": 256,  # OpenVLA uses 256x256, not 512x512
+        "camera_widths": 256,
     }
 
     # Initialize environment
@@ -77,15 +114,23 @@ def record_demo(bddl_file, out_file, model_flag="openvla", prompt=None, device="
     while not done and step < 200:
         # Extract RGB observation for model inference
         img = Image.fromarray(obs["agentview_image"].astype(np.uint8))
+        
+        # Format prompt following OpenVLA's convention
         q = f"In: What action should the robot take to {prompt}?\nOut:"
         inputs = processor(q, img).to(device, dtype=torch.bfloat16)
-        action = vla.predict_action(**inputs, unnorm_key="bridge_orig", do_sample=False)
-        scaled_action = action.copy()
-        scaled_action[:3] *= LINEAR_SCALE_FACTOR
-        scaled_action[3:6] *= ANGULAR_SCALE_FACTOR
+        
+        # CRITICAL: Use task_suite_name as unnorm_key, NOT "bridge_orig"!
+        # OpenVLA uses different action statistics for each LIBERO task suite.
+        action = vla.predict_action(**inputs, unnorm_key=task_suite_name, do_sample=False)
+        
+        # Process gripper action following OpenVLA's convention
+        # 1. Normalize gripper action [0,1] -> [-1,+1]
+        action = normalize_gripper_action(action, binarize=True)
+        # 2. Invert gripper action sign (OpenVLA flips it during training)
+        action = invert_gripper_action(action)
 
-        # Step in environment
-        obs, reward, done, info = env.step(scaled_action)
+        # Step in environment (no manual scaling needed!)
+        obs, reward, done, info = env.step(action.tolist())
 
         # Flatten obs into a single vector for 'states'
         flat_state = np.concatenate([
@@ -100,7 +145,7 @@ def record_demo(bddl_file, out_file, model_flag="openvla", prompt=None, device="
         obs_list.append({k: np.array(v) for k, v in obs.items() if not k.endswith("image")})
 
         step += 1
-        print(f"Step {step}, Action: {scaled_action}, Done: {done}")
+        print(f"Step {step}, Action: {action}, Reward: {reward}, Done: {done}")
 
     env.close()
 
@@ -135,16 +180,30 @@ def main():
     parser.add_argument("--bddl_file", type=str, required=True, help="Path to BDDL scene file")
     parser.add_argument("--out_file", type=str, required=True, help="Path to save HDF5 demo")
     parser.add_argument("--prompt", type=str, required=True, help="Task instruction for the model")
+    parser.add_argument(
+        "--task_suite_name", 
+        type=str, 
+        default="libero_spatial",
+        choices=["libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"],
+        help="LIBERO task suite name (used for action unnormalization)"
+    )
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--cache_dir", type=str, required=True, help="Cache directory for model weights")
     args = parser.parse_args()
 
-    print(f"Recording demo with model={args.model}, bddl_file={args.bddl_file}, out_file={args.out_file}")
+    print(f"Recording demo with:")
+    print(f"  Model: {args.model}")
+    print(f"  Task suite: {args.task_suite_name}")
+    print(f"  BDDL file: {args.bddl_file}")
+    print(f"  Output file: {args.out_file}")
+    print(f"  Prompt: {args.prompt}")
+    
     record_demo(
         bddl_file=args.bddl_file,
         out_file=args.out_file,
         model_flag=args.model,
         prompt=args.prompt,
+        task_suite_name=args.task_suite_name,
         device=args.device,
         cache_dir=args.cache_dir,
     )
