@@ -4,26 +4,27 @@ Render a LIBERO (or custom) demonstration file into a video.
 This script replays an existing demo episode using the OffScreenRenderEnv
 and saves the rendered frames to a video file (MP4 or AVI).
 
-Unlike the original LIBERO repo utilities, this script does not rely on
-benchmark_name or task_id. Instead, you directly pass the demo HDF5 file
-and its associated BDDL scene file.
+Usage Option 1 (YAML config):
+    python playback.py --config ../configs/inference_config.yaml
 
-Usage:
+Usage Option 2 (Direct arguments):
     python playback.py \
         --demo_file /path/to/demo_file.hdf5 \
         --bddl_file /path/to/scene.bddl \
         --out_video /path/to/output/demo.mp4
 
-Arguments:
-    --demo_file    Path to the HDF5 demo file
-    --bddl_file    Path to the BDDL scene file describing the environment
-    --out_video    Full output video filepath (.mp4 or .avi). Default: demo.mp4
+YAML Configuration:
+    When using --config, the YAML file should contain:
+    - out_file: Path to the HDF5 demo file
+    - bddl_file: Path to the BDDL scene file
+    - record_path: Output video filepath (optional, defaults to demo.mp4)
 """
 
 import os
 import cv2
 import h5py
 import argparse
+import yaml
 import numpy as np
 
 from libero.libero.envs import OffScreenRenderEnv
@@ -82,17 +83,46 @@ def render_demo(demo_file, bddl_file, out_video="demo.mp4"):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--demo_file", type=str, required=True)
-    parser.add_argument("--bddl_file", type=str, required=True)
-    parser.add_argument("--out_video", type=str, default="demo.mp4")
+    parser = argparse.ArgumentParser(description="Render LIBERO demonstrations as videos")
+    parser.add_argument("--config", type=str, help="Path to YAML config file (same format as record.py)")
+    parser.add_argument("--demo_file", type=str, help="Path to HDF5 demo file (if not using --config)")
+    parser.add_argument("--bddl_file", type=str, help="Path to BDDL scene file (if not using --config)")
+    parser.add_argument("--out_video", type=str, default="demo.mp4", help="Output video path (if not using --config)")
     args = parser.parse_args()
 
-    print(f"Using BDDL file: {args.bddl_file}")
-    print(f"Using demo file: {args.demo_file}")
-    print(f"Output video path: {args.out_video}")
+    # Load config from YAML if provided
+    if args.config:
+        with open(args.config, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        demo_file = config.get("out_file")
+        bddl_file = config.get("bddl_file")
+        out_video = config.get("record_path", "demo.mp4")
+        
+        if not demo_file:
+            raise ValueError("Config file must contain 'out_file' field for demo HDF5 path")
+        if not bddl_file:
+            raise ValueError("Config file must contain 'bddl_file' field")
+    else:
+        # Use direct command-line arguments
+        if not args.demo_file or not args.bddl_file:
+            parser.error("Either --config or both --demo_file and --bddl_file must be provided")
+        
+        demo_file = args.demo_file
+        bddl_file = args.bddl_file
+        out_video = args.out_video
 
-    render_demo(args.demo_file, args.bddl_file, args.out_video)
+    print("=" * 80)
+    print("LIBERO Demo Playback")
+    print("=" * 80)
+    print(f"BDDL file: {bddl_file}")
+    print(f"Demo file: {demo_file}")
+    print(f"Output video: {out_video}")
+    print("=" * 80)
+
+    render_demo(demo_file, bddl_file, out_video)
+    
+    print("\n✓ Playback complete!")
 
 
 if __name__ == "__main__":
