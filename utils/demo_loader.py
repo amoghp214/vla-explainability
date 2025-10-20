@@ -138,21 +138,90 @@ def load_actions_from_demo(demo_file: str, demo_index: int = 0) -> np.ndarray:
     return actions
 
 
+def save_robot_state_from_demo(
+    demo_file: str,
+    output_file: str,
+    demo_index: int = 0,
+    verbose: bool = True
+) -> str:
+    """
+    Load robot state from an HDF5 demo and save it as a numpy .npy file.
+    
+    This is a convenience function that combines loading and saving in one step.
+    The saved .npy file can be quickly loaded later using np.load().
+    
+    Args:
+        demo_file: Path to the HDF5 demonstration file
+        output_file: Path to save the numpy array (will add .npy extension if missing)
+        demo_index: Index of the demo to load (default: 0)
+        verbose: Whether to print confirmation message (default: True)
+    
+    Returns:
+        str: The actual path where the file was saved (with .npy extension)
+    
+    Example:
+        >>> save_robot_state_from_demo(
+        ...     "demos/task_demo.hdf5",
+        ...     "processed/task_states.npy"
+        ... )
+        Saved robot state (300, 8) to processed/task_states.npy
+        'processed/task_states.npy'
+        
+        >>> # Later, load it quickly
+        >>> states = np.load("processed/task_states.npy")
+    """
+    import os
+    
+    # Load the robot state array
+    robot_state = load_robot_state_from_demo(demo_file, demo_index)
+    
+    # Ensure output file has .npy extension
+    if not output_file.endswith('.npy'):
+        output_file = output_file + '.npy'
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    
+    # Save to .npy file
+    np.save(output_file, robot_state)
+    
+    if verbose:
+        print(f"Saved robot state {robot_state.shape} to {output_file}")
+    
+    return output_file
+
+
 if __name__ == "__main__":
-    # Example usage
-    import sys
+    # Example usage and command-line interface
+    import argparse
     
-    if len(sys.argv) < 2:
-        print("Usage: python demo_loader.py <path_to_demo.hdf5>")
-        sys.exit(1)
-    
-    demo_file = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="Load and inspect LIBERO demonstration files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+        Examples:
+        # Inspect a demo file
+        python demo_loader.py demos/task_demo.hdf5
+        
+        # Inspect and save to .npy file
+        python demo_loader.py demos/task_demo.hdf5 --output processed/task_states.npy
+        
+        # Or use the module directly
+        python -m utils.demo_loader demos/task_demo.hdf5 --output processed/task_states.npy
+        """
+    )
+    parser.add_argument("demo_file", type=str, help="Path to HDF5 demonstration file")
+    parser.add_argument("--output", "-o", type=str, help="Optional: Save robot state to this .npy file path")
+    parser.add_argument("--demo-index", type=int, default=0, help="Demo index to load (default: 0)")
+    args = parser.parse_args()
     
     # Load and display demo information
     print("=" * 80)
     print("Demo Information")
     print("=" * 80)
-    info = load_demo_info(demo_file)
+    info = load_demo_info(args.demo_file, args.demo_index)
     for key, value in info.items():
         if key == "available_keys":
             print(f"{key}:")
@@ -166,7 +235,7 @@ if __name__ == "__main__":
     print("=" * 80)
     
     # Load robot state
-    robot_state = load_robot_state_from_demo(demo_file)
+    robot_state = load_robot_state_from_demo(args.demo_file, args.demo_index)
     print(f"Shape: {robot_state.shape}")
     print(f"Number of frames: {robot_state.shape[0]}")
     print(f"\nFirst frame:")
@@ -179,6 +248,17 @@ if __name__ == "__main__":
     print(f"  Gripper position: {robot_state[-1, 7]}")
     
     # Load actions
-    actions = load_actions_from_demo(demo_file)
+    actions = load_actions_from_demo(args.demo_file, args.demo_index)
     print(f"\nActions shape: {actions.shape}")
+    
+    # Save to file if output path is provided
+    if args.output:
+        print("\n" + "=" * 80)
+        saved_path = save_robot_state_from_demo(
+            args.demo_file, 
+            args.output, 
+            args.demo_index,
+            verbose=True
+        )
+        print(f"✓ Saved to: {saved_path}")
 
