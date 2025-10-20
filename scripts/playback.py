@@ -130,7 +130,7 @@ def render_demo(demo_file, bddl_file, out_video="demo.mp4", num_demos=None):
             print(f"{'='*60}")
             
             # Create indexed output path
-            indexed_video = f"{base_path}_demo_{demo_idx}.{extension}"
+            indexed_video = f"{base_path}_{demo_idx}.{extension}"
             render_single_demo(demo_file, bddl_file, demo_idx, indexed_video)
     
     print(f"\n✓ Rendered {demos_to_render} demo(s)")
