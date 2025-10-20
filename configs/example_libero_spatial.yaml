@@ -1,0 +1,14 @@
+# Task: pick up the black bowl next to the cookie box and place it on the plate
+
+model: openvla
+task_suite_name: libero_spatial
+device: cuda:0
+cache_dir: /home/hice1/vkulkarni46/scratch/huggingface # replace this with your own cache dir
+
+bddl_file: ../libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl
+prompt: pick up the black bowl next to the cookie box and place it on the plate
+
+out_file: /home/hice1/vkulkarni46/scratch/datasets/xAI/datasets/custom/demo.hdf5
+record_path: ../videos/libero_spatial/demo.mp4
+
+action_scale: 1.0
