@@ -1,8 +1,12 @@
 """
 Render a LIBERO (or custom) demonstration file into a video.
 
-This script replays an existing demo episode using the OffScreenRenderEnv
-and saves the rendered frames to a video file (MP4 or AVI).
+This script replays existing demo episodes using the OffScreenRenderEnv
+and saves the rendered frames to video files (MP4 or AVI).
+
+Supports rendering multiple demos from a single HDF5 file.
+When multiple demos are present, creates separate videos for each:
+  - demo.mp4 -> demo_demo_0.mp4, demo_demo_1.mp4, etc.
 
 Usage Option 1 (YAML config):
     python playback.py --config ../configs/inference_config.yaml
@@ -18,6 +22,7 @@ YAML Configuration:
     - out_file: Path to the HDF5 demo file
     - bddl_file: Path to the BDDL scene file
     - record_path: Output video filepath (optional, defaults to demo.mp4)
+    - num_demos: Number of demos to render (optional, auto-detects all if not specified)
 """
 
 import os
@@ -30,9 +35,9 @@ import numpy as np
 from libero.libero.envs import OffScreenRenderEnv
 
 
-def render_demo(demo_file, bddl_file, out_video="demo.mp4"):
+def render_single_demo(demo_file, bddl_file, demo_index, out_video):
     """
-    Render a demo (HDF5 + BDDL) into a video.
+    Render a single demo (HDF5 + BDDL) into a video.
     """
     env_args = {
         "bddl_file_name": bddl_file,
@@ -42,13 +47,17 @@ def render_demo(demo_file, bddl_file, out_video="demo.mp4"):
 
     # Initialize environment
     env = OffScreenRenderEnv(**env_args)
-    env.seed(0)
+    env.seed(demo_index)
     frames = []
 
     # Load HDF5 demo
     with h5py.File(demo_file, "r") as f:
-        actions = f["data/demo_0/actions"][()]
-        init_state = f["data/demo_0/states"][0]
+        demo_key = f"data/demo_{demo_index}"
+        if demo_key not in f:
+            raise ValueError(f"Demo '{demo_key}' not found in {demo_file}")
+        
+        actions = f[demo_key]["actions"][()]
+        init_state = f[demo_key]["states"][0]
 
     # Set environment to initial state
     env.set_init_state(init_state)
@@ -59,12 +68,13 @@ def render_demo(demo_file, bddl_file, out_video="demo.mp4"):
 
     # Step through actions
     for i, action in enumerate(actions):
-        print(f"Action: {action}")
+        if (i + 1) % 10 == 0:
+            print(f"  Frame {i + 1}/{len(actions)}")
         obs, reward, done, info = env.step(action)
         frame = (np.clip(obs["agentview_image"], 0, 255)).astype("uint8")
         frames.append(frame)
         if done:
-            print(f"Demo finished at step {i}")
+            print(f"  Demo finished at step {i}")
             break
 
     env.close()
@@ -79,7 +89,51 @@ def render_demo(demo_file, bddl_file, out_video="demo.mp4"):
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()
 
-    print(f"Saved demo video: {out_video} ({len(frames)} frames)")
+    print(f"  ✓ Saved video: {out_video} ({len(frames)} frames)")
+    return len(frames)
+
+
+def render_demo(demo_file, bddl_file, out_video="demo.mp4", num_demos=None):
+    """
+    Render demo(s) from HDF5 file into video(s).
+    
+    If num_demos is None, it will detect and render all demos in the file.
+    If num_demos is specified, it will render that many demos.
+    """
+    # Detect available demos
+    with h5py.File(demo_file, "r") as f:
+        available_demos = [key for key in f["data"].keys() if key.startswith("demo_")]
+        available_demos.sort()
+    
+    total_demos = len(available_demos)
+    
+    # Determine how many demos to render
+    if num_demos is None:
+        demos_to_render = total_demos
+    else:
+        demos_to_render = min(num_demos, total_demos)
+    
+    print(f"Found {total_demos} demo(s) in file, rendering {demos_to_render}...")
+    
+    if demos_to_render == 1:
+        # Single demo - use provided output path directly
+        print(f"\nRendering demo 0...")
+        render_single_demo(demo_file, bddl_file, 0, out_video)
+    else:
+        # Multiple demos - create separate videos with indexed names
+        base_path = out_video.rsplit(".", 1)[0]  # Remove extension
+        extension = out_video.rsplit(".", 1)[1] if "." in out_video else "mp4"
+        
+        for demo_idx in range(demos_to_render):
+            print(f"\n{'='*60}")
+            print(f"Rendering demo {demo_idx + 1}/{demos_to_render}")
+            print(f"{'='*60}")
+            
+            # Create indexed output path
+            indexed_video = f"{base_path}_demo_{demo_idx}.{extension}"
+            render_single_demo(demo_file, bddl_file, demo_idx, indexed_video)
+    
+    print(f"\n✓ Rendered {demos_to_render} demo(s)")
 
 
 def main():
@@ -98,6 +152,7 @@ def main():
         demo_file = config.get("out_file")
         bddl_file = config.get("bddl_file")
         out_video = config.get("record_path", "demo.mp4")
+        num_demos = config.get("num_demos", None)  # Auto-detect if not specified
         
         if not demo_file:
             raise ValueError("Config file must contain 'out_file' field for demo HDF5 path")
@@ -111,6 +166,7 @@ def main():
         demo_file = args.demo_file
         bddl_file = args.bddl_file
         out_video = args.out_video
+        num_demos = None  # Auto-detect all demos
 
     print("=" * 80)
     print("LIBERO Demo Playback")
@@ -120,7 +176,7 @@ def main():
     print(f"Output video: {out_video}")
     print("=" * 80)
 
-    render_demo(demo_file, bddl_file, out_video)
+    render_demo(demo_file, bddl_file, out_video, num_demos)
     
     print("\n✓ Playback complete!")
 

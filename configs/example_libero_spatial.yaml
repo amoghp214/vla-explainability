@@ -12,3 +12,7 @@ out_file: /home/hice1/vkulkarni46/scratch/datasets/xAI/datasets/custom/demo.hdf5
 record_path: ../videos/libero_spatial/demo.mp4
 
 action_scale: 1.0
+
+# Multiple demos with noise (simulates reality)
+num_demos: 5  # Number of demonstrations to record/playback
+noise_std: 0.001  # Gaussian noise std deviation for action deltas (0 = deterministic)

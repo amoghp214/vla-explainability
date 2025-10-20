@@ -138,6 +138,52 @@ def load_actions_from_demo(demo_file: str, demo_index: int = 0) -> np.ndarray:
     return actions
 
 
+def get_num_demos(demo_file: str) -> int:
+    """
+    Get the number of demonstrations in an HDF5 file.
+    
+    Args:
+        demo_file: Path to the HDF5 demonstration file
+    
+    Returns:
+        int: Number of demos in the file
+    
+    Example:
+        >>> num_demos = get_num_demos("demos/multi_demo.hdf5")
+        >>> print(f"File contains {num_demos} demonstrations")
+        File contains 5 demonstrations
+    """
+    with h5py.File(demo_file, "r") as f:
+        demos = [key for key in f["data"].keys() if key.startswith("demo_")]
+        return len(demos)
+
+
+def load_all_robot_states(demo_file: str) -> list:
+    """
+    Load robot states from all demonstrations in an HDF5 file.
+    
+    Args:
+        demo_file: Path to the HDF5 demonstration file
+    
+    Returns:
+        list: List of numpy arrays, one for each demo. Each array has shape (num_frames, 8)
+    
+    Example:
+        >>> all_states = load_all_robot_states("demos/multi_demo.hdf5")
+        >>> print(f"Loaded {len(all_states)} demos")
+        >>> for i, states in enumerate(all_states):
+        ...     print(f"Demo {i}: {states.shape[0]} frames")
+    """
+    num_demos = get_num_demos(demo_file)
+    all_states = []
+    
+    for demo_idx in range(num_demos):
+        states = load_robot_state_from_demo(demo_file, demo_idx)
+        all_states.append(states)
+    
+    return all_states
+
+
 def save_robot_state_from_demo(
     demo_file: str,
     output_file: str,

@@ -3,21 +3,27 @@ Record OpenVLA demonstrations on LIBERO tasks.
 
 This script runs OpenVLA inference on a LIBERO task and saves:
 - HDF5 demonstration file with actions, observations, and rewards
+- Supports recording multiple demos in a single HDF5 file
+- Can add Gaussian noise to actions to simulate reality
 
 Usage:
     python record.py --config ../configs/inference_config.yaml
 
 Configuration:
-    Edit inference_config.yaml to specify:
+    Edit your config YAML to specify:
     - Model and task suite
     - BDDL file and task prompt
     - Output path for demo HDF5 file
+    - num_demos: Number of demonstrations to record (default: 1)
+    - noise_std: Gaussian noise std deviation for actions (default: 0.0)
     - Optional action scaling
 
 The script automatically:
     - Loads the appropriate finetuned OpenVLA model for your task suite
     - Preprocesses images for LIBERO
     - Handles action normalization and gripper control
+    - Records multiple demos with different random seeds
+    - Adds small Gaussian noise to simulate real-world variability
 
 Note: To create videos from recorded demos, use playback.py with the same config file.
 """
@@ -102,28 +108,24 @@ def load_openvla(task_suite_name, device, cache_dir):
     return processor, vla
 
 
-def record_demo(config):
-    """Record a demonstration using OpenVLA."""
-    env_args = {
-        "bddl_file_name": config["bddl_file"],
-        "camera_heights": 256,
-        "camera_widths": 256,
-    }
-    
-    print("Initializing environment...")
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(0)
+def add_gaussian_noise(action, noise_std):
+    """Add Gaussian noise to action to simulate reality."""
+    if noise_std > 0:
+        noise = np.random.normal(0, noise_std, size=action.shape)
+        # Only add noise to the first 6 dimensions (position/orientation deltas)
+        # Don't add noise to gripper action (last dimension)
+        action[:6] = action[:6] + noise[:6]
+    return action
+
+
+def record_single_demo(env, processor, vla, config, demo_index, seed):
+    """Record a single demonstration."""
+    # Set random seed for this demo
+    np.random.seed(seed)
+    env.seed(seed)
     obs = env.reset()
     
-    print("Loading model...")
-    processor, vla = load_openvla(
-        config["task_suite_name"],
-        config.get("device", "cuda:0"),
-        config["cache_dir"]
-    )
-    
     # Wait for objects to stabilize
-    print("Stabilizing environment...")
     for _ in range(10):
         obs, _, _, _ = env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
     
@@ -137,13 +139,14 @@ def record_demo(config):
     }
     max_steps = max_steps_dict.get(config["task_suite_name"], 200)
     action_scale = config.get("action_scale", 1.0)
+    noise_std = config.get("noise_std", 0.0)
     
     # Initialize recording
     actions, dones, rewards, states, obs_list = [], [], [], [], []
     step = 0
     done = False
     
-    print(f"Starting policy rollout (max {max_steps} steps)...")
+    print(f"  Starting policy rollout (max {max_steps} steps, noise_std={noise_std})...")
     
     while not done and step < max_steps:
         # Preprocess image
@@ -159,6 +162,9 @@ def record_demo(config):
         action = invert_gripper_action(action)
         if action_scale != 1.0:
             action[:6] = action[:6] * action_scale
+        
+        # Add Gaussian noise to simulate reality
+        action = add_gaussian_noise(action, noise_std)
         
         # Execute action
         obs_new, reward, done, info = env.step(action.tolist())
@@ -176,26 +182,75 @@ def record_demo(config):
         
         step += 1
         if step % 10 == 0 or done:
-            print(f"Step {step}/{max_steps}, Reward: {reward:.2f}, Done: {done}")
+            print(f"  Step {step}/{max_steps}, Reward: {reward:.2f}, Done: {done}")
+    
+    demo_data = {
+        "actions": np.array(actions),
+        "dones": np.array(dones, dtype=bool),
+        "rewards": np.array(rewards),
+        "states": np.array(states, dtype=np.float32),
+        "obs_list": obs_list
+    }
+    
+    print(f"  ✓ Demo {demo_index} completed with {len(actions)} steps, final reward: {reward:.2f}")
+    
+    return demo_data
+
+
+def record_demo(config):
+    """Record demonstration(s) using OpenVLA."""
+    env_args = {
+        "bddl_file_name": config["bddl_file"],
+        "camera_heights": 256,
+        "camera_widths": 256,
+    }
+    
+    print("Initializing environment...")
+    env = OffScreenRenderEnv(**env_args)
+    
+    print("Loading model...")
+    processor, vla = load_openvla(
+        config["task_suite_name"],
+        config.get("device", "cuda:0"),
+        config["cache_dir"]
+    )
+    
+    # Get number of demos to record
+    num_demos = config.get("num_demos", 1)
+    print(f"\nRecording {num_demos} demonstration(s)...")
+    
+    # Record all demos
+    all_demos = []
+    for demo_idx in range(num_demos):
+        print(f"\n{'='*60}")
+        print(f"Recording demo {demo_idx + 1}/{num_demos}")
+        print(f"{'='*60}")
+        
+        # Use different seed for each demo
+        seed = demo_idx
+        demo_data = record_single_demo(env, processor, vla, config, demo_idx, seed)
+        all_demos.append(demo_data)
     
     env.close()
     
-    # Save HDF5
-    print(f"Saving demo to {config['out_file']}...")
+    # Save all demos to HDF5
+    print(f"\nSaving {num_demos} demo(s) to {config['out_file']}...")
     os.makedirs(os.path.dirname(config['out_file']), exist_ok=True)
-    with h5py.File(config['out_file'], "w") as f:
-        dset = f.create_group("data/demo_0")
-        dset.create_dataset("actions", data=np.array(actions), compression="gzip")
-        dset.create_dataset("dones", data=np.array(dones, dtype=bool), compression="gzip")
-        dset.create_dataset("rewards", data=np.array(rewards), compression="gzip")
-        dset.create_dataset("states", data=np.array(states, dtype=np.float32), compression="gzip")
-        
-        obs_grp = dset.create_group("obs")
-        for k in obs_list[0].keys():
-            obs_stack = np.stack([step_obs[k] for step_obs in obs_list], axis=0)
-            obs_grp.create_dataset(k, data=obs_stack, compression="gzip")
     
-    print(f"✓ Saved demo with {len(actions)} steps")
+    with h5py.File(config['out_file'], "w") as f:
+        for demo_idx, demo_data in enumerate(all_demos):
+            dset = f.create_group(f"data/demo_{demo_idx}")
+            dset.create_dataset("actions", data=demo_data["actions"], compression="gzip")
+            dset.create_dataset("dones", data=demo_data["dones"], compression="gzip")
+            dset.create_dataset("rewards", data=demo_data["rewards"], compression="gzip")
+            dset.create_dataset("states", data=demo_data["states"], compression="gzip")
+            
+            obs_grp = dset.create_group("obs")
+            for k in demo_data["obs_list"][0].keys():
+                obs_stack = np.stack([step_obs[k] for step_obs in demo_data["obs_list"]], axis=0)
+                obs_grp.create_dataset(k, data=obs_stack, compression="gzip")
+    
+    print(f"✓ Saved {num_demos} demo(s) to HDF5 file")
 
 
 def main():
