@@ -13,6 +13,8 @@ gpt/
 bert/
 logs/
 benchmark_tasks/
+explainability/test/*.html
+
 
 *.mp4
 libero.egg-info/
