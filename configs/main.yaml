@@ -1,0 +1,118 @@
+# Main configuration file for pipelined perturbed dataset generation
+# This file contains all parameters needed for record.py, playback.py, and perturbation generation
+
+# =============================================================================
+# Base Task Configuration
+# =============================================================================
+model: openvla
+task_suite_name: libero_spatial
+device: cuda:0
+cache_dir: /home/hice1/vkulkarni46/scratch/huggingface  # Replace with your cache directory
+
+# Original BDDL file (will be used as base for perturbations)
+base_bddl_file: ../libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl
+base_prompt: pick up the black bowl next to the cookie box and place it on the plate
+
+# Recording parameters
+action_scale: 1.0
+num_demos: 5  # Number of demonstrations to record per perturbation
+noise_std: 0.001  # Gaussian noise std deviation for action deltas
+
+# =============================================================================
+# Perturbation Configuration
+# =============================================================================
+perturbations:
+  # Number of perturbations to generate
+  num_perturbations: 10
+  
+  # Perturbation types to generate
+  # Options: bddl_spatial, language
+  types:
+    - bddl_spatial
+    # - language
+  
+  # For BDDL spatial perturbations
+  bddl_spatial:
+    # List of perturbation combinations to apply
+    # Each entry is a dict with perturbation type and target objects
+    perturbation_specs:
+      - type: move
+        objects: ["akita_black_bowl_1"]
+      - type: reorient
+        objects: ["akita_black_bowl_1"]
+      - type: color
+        objects: ["akita_black_bowl_1"]
+      - type: move
+        objects: ["akita_black_bowl_1", "wine_bottle_1"]
+      - type: reorient
+        objects: ["wine_bottle_1"]
+      - type: distractor
+        count: 1
+      - type: replace
+        objects: ["akita_black_bowl_1"]
+  
+  # For language perturbations (if enabled)
+  language:
+    # Will use generate_perturbations from explainability/perturbations/language/
+    # All standard perturbations will be generated
+
+# =============================================================================
+# SLURM Job Configuration
+# =============================================================================
+slurm:
+  # Maximum number of simultaneous jobs
+  max_concurrent_jobs: 4
+  
+  # Job parameters
+  job_params:
+    account: your_account  # Replace with your PACE account
+    partition: gpu  # GPU partition name
+    time: "02:00:00"  # Time limit (HH:MM:SS)
+    nodes: 1
+    ntasks_per_node: 1
+    cpus_per_task: 4
+    mem: 16G
+    gpus: 1
+    gpu_type: "v100"  # or "a100", "p100", etc.
+  
+  # Environment setup
+  conda_env: vla-explainability  # Conda environment name
+  module_load: []  # List of modules to load (e.g., ["cuda/11.8"])
+  
+  # Job script template variables
+  job_name_prefix: "vla_record"
+  
+  # Polling interval for checking job status (seconds)
+  poll_interval: 30
+
+# =============================================================================
+# Directory Structure
+# =============================================================================
+# Base directory for runs (will be created in scratch folder)
+# If not set, will use $SCRATCH/vla-explainability-runs
+run_base_dir: null
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  # Enable evaluation after all jobs complete
+  enabled: true
+  
+  # Metric weights for VLA metrics
+  metric_weights:
+    w_result: 1.0
+    w_time: 1.0
+    w_trajectory: 1.0
+  
+  # Trajectory weight matrix (8D: xyz, quat, gripper)
+  trajectory_weights: [1.0, 1.0, 1.0, 0.2, 0.2, 0.2, 0.2, 0.5]
+  
+  # Output formats
+  output_formats:
+    - json
+    - hdf5
+  
+  # Generate visualizations
+  generate_visualizations: true
+
