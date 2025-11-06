@@ -5,14 +5,14 @@ from metric_utils import extract_episode_trials
 import data_visualization
 
 
-og_traj = np.load("./test/states_orig.npy")
-no_change_traj = np.load("./test/states_no_change.npy")
-big_change_traj = np.load("./test/states_big_change.npy")
-small_change_traj = np.load("./test/states_small_prompt_change.npy")
+# og_traj = np.load("./test/states_orig.npy")
+# no_change_traj = np.load("./test/states_no_change.npy")
+# big_change_traj = np.load("./test/states_big_change.npy")
+# small_change_traj = np.load("./test/states_small_prompt_change.npy")
 
 episode_data_path = "./test/vla_output_1.json"
 UNPERTURBED = 'unperturbed'
-print(og_traj.shape, no_change_traj.shape, big_change_traj.shape, small_change_traj.shape)
+# print(og_traj.shape, no_change_traj.shape, big_change_traj.shape, small_change_traj.shape)
 
 W = np.array([1, 1, 1, 0.2, 0.2, 0.2, 0.2, 0.5])
 
@@ -38,7 +38,7 @@ for i, t in enumerate(perturbed_v2_episode):
     print(f"Perturbed trajectory metric {i} output:", vla_metrics.calculate_dtw_trajectory_difference(unperturbed_episode[0], t, W)[0])
 
 sample_1 = unperturbed_episode[2]
-sample_2 = unperturbed_episode[3]
+sample_2 = perturbed_v2_episode[2]
 # sample_1 = og_traj
 # sample_2 = small_change_traj
 sample_dtw_trajectory_diff, sample_dtw_warp_path, sample_triangles = vla_metrics.calculate_dtw_trajectory_difference(sample_1, sample_2, W)
@@ -52,7 +52,7 @@ data_visualization.visualize_trajectories(perturbed_v2_episode, output_file="./t
 
 
 # print("2-trial trajectory difference:", vla_metrics.calculate_trajectory_difference_metric([og_traj, no_change_traj], [big_change_traj, small_change_traj]))
-print("OG vs. OG", vla_metrics.calculate_trajectory_difference_metric([og_traj], [og_traj], W))
-print("OG vs. No Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [no_change_traj], W))
-print("OG vs. Small Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [small_change_traj], W))
-print("OG vs. Big Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [big_change_traj], W))
+# print("OG vs. OG", vla_metrics.calculate_trajectory_difference_metric([og_traj], [og_traj], W))
+# print("OG vs. No Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [no_change_traj], W))
+# print("OG vs. Small Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [small_change_traj], W))
+# print("OG vs. Big Change", vla_metrics.calculate_trajectory_difference_metric([og_traj], [big_change_traj], W))
