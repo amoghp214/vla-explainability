@@ -13,7 +13,7 @@ gpt/
 bert/
 logs/
 benchmark_tasks/
-explainability/test/*.html
+explainability/test/*
 
 
 *.mp4
