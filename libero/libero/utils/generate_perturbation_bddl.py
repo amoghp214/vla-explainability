@@ -136,39 +136,6 @@ def parse_object_region_map(bddl_text, region_blocks):
     return obj_region_map
 
 # --------------------------
-# Workspace Detection
-# --------------------------
-
-def extract_target_workspace(bddl_text):
-    """Extract the target workspace name from BDDL file."""
-    # Look for (:target workspace_name) in region definitions
-    target_pattern = re.compile(r"\(:target\s+(\w+)\)")
-    matches = target_pattern.findall(bddl_text)
-    
-    if matches:
-        # Return the most common target (usually all regions share the same target)
-        from collections import Counter
-        target_counts = Counter(matches)
-        return target_counts.most_common(1)[0][0]
-    
-    # Fallback: try to detect from problem name or default
-    if "kitchen" in bddl_text.lower():
-        return "kitchen_table"
-    elif "living_room" in bddl_text.lower():
-        return "living_room_table"
-    elif "study" in bddl_text.lower():
-        return "study_table"
-    elif "LIBERO_Kitchen" in bddl_text:
-        return "kitchen_table"
-    elif "LIBERO_Living_Room" in bddl_text:
-        return "living_room_table"
-    elif "LIBERO_Study" in bddl_text:
-        return "study_table"
-    
-    return "kitchen_table"  # Default fallback
-
-
-# --------------------------
 # Attribute Support Check
 # --------------------------
 
@@ -313,35 +280,18 @@ def change_color(bddl_text, obj_name, obj_region_map, region_blocks):
     print(f"[COLOR] {obj_name} color changed to {color_name} (RGBA: {rgba_values})")
     return bddl_text
 
-def replace_object(bddl_text, obj_name, target_workspace=None):
+def replace_object(bddl_text, obj_name):
     """Replace an object with a new one, maintaining BDDL consistency."""
     # Valid LIBERO object categories (based on common LIBERO objects)
     # These match the object types available in libero/libero/envs/objects/__init__.py
-    valid_objects = [
+    valid_kitchen_objs = [
         "akita_black_bowl",
         "white_yellow_mug",
         "wine_bottle",
-        "plate",
-        "alphabet_soup",
-        "cream_cheese",
-        "tomato_sauce",
-        "ketchup",
-        "butter",
-        "milk",
-        "chocolate_pudding",
-        "orange_juice",
-        "bbq_sauce",
-        "salad_dressing",
-        "black_book",
-        "moka_pot",
-        "chefmate_8_frypan"
+        "plate"
     ]
     
-    # Auto-detect workspace if not provided
-    if target_workspace is None:
-        target_workspace = extract_target_workspace(bddl_text)
-    
-    new_obj_type = random.choice(valid_objects)
+    new_obj_type = random.choice(valid_kitchen_objs)
     new_obj = f"{new_obj_type}_{random.randint(1,999)}"
     
     # Get the old object type for region name mapping
@@ -377,10 +327,10 @@ def replace_object(bddl_text, obj_name, target_workspace=None):
         bddl_text
     )
     
-    # 4. Replace in region references (target_workspace_old_region_name)
+    # 4. Replace in region references (kitchen_table_old_region_name)
     bddl_text = re.sub(
-        rf"\b{target_workspace}_{old_region_name}\b",
-        f"{target_workspace}_{new_region_name}",
+        rf"\bkitchen_table_{old_region_name}\b",
+        f"kitchen_table_{new_region_name}",
         bddl_text
     )
     
@@ -401,35 +351,18 @@ def replace_object(bddl_text, obj_name, target_workspace=None):
     print(f"[REPLACE] {obj_name} replaced with {new_obj}")
     return bddl_text
 
-def add_distractor(bddl_text, target_workspace=None):
-    """Add a distractor object to the scene."""
-    # Valid LIBERO object categories (expanded for all scene types)
-    valid_objects = [
+def add_distractor(bddl_text):
+    # Valid LIBERO object categories
+    valid_kitchen_objs = [
         "akita_black_bowl",
         "white_yellow_mug",
         "wine_bottle",
-        "plate",
-        "alphabet_soup",
-        "cream_cheese",
-        "tomato_sauce",
-        "ketchup",
-        "butter",
-        "milk",
-        "chocolate_pudding",
-        "orange_juice",
-        "bbq_sauce",
-        "salad_dressing",
-        "black_book",
-        "moka_pot",
-        "chefmate_8_frypan"
+        "plate"
     ]
     
-    # Auto-detect workspace if not provided
-    if target_workspace is None:
-        target_workspace = extract_target_workspace(bddl_text)
-    
-    obj_type = random.choice(valid_objects)
+    obj_type = random.choice(valid_kitchen_objs)
     new_obj = f"{obj_type}_{random.randint(100,999)}"
+    target = "kitchen_table"
     region_name = f"{new_obj}_init_region"
 
     # Generate ranges: (x_min, y_min, x_max, y_max)
@@ -443,7 +376,7 @@ def add_distractor(bddl_text, target_workspace=None):
     ranges_str = f"{x_min} {y_min} {x_max} {y_max}"
 
     region_def = f"""      ({region_name}
-          (:target {target_workspace})
+          (:target {target})
           (:ranges (
               ({ranges_str})
             )
@@ -497,70 +430,75 @@ def add_distractor(bddl_text, target_workspace=None):
         init_content = init_match.group(2)
         last_line = init_content.rstrip().split('\n')[-1] if init_content.strip() else ""
         indent = re.match(r'^(\s*)', last_line).group(1) if last_line else "    "
-        new_content = init_content + f"{indent}(On {new_obj} {target_workspace}_{region_name})\n"
+        new_content = init_content + f"{indent}(On {new_obj} kitchen_table_{region_name})\n"
         bddl_text = bddl_text[:init_match.start()] + init_match.group(1) + new_content + init_match.group(3) + bddl_text[init_match.end():]
 
-    print(f"[DISTRACTOR] Added new object {new_obj} at ({x_min}, {y_min}, {x_max}, {y_max}) on {target_workspace}")
+    print(f"[DISTRACTOR] Added new object {new_obj} at ({x_min}, {y_min}, {x_max}, {y_max}) on {target}")
     return bddl_text
 
 # --------------------------
-# Apply perturbations
+# Apply perturbations with random selection
 # --------------------------
 
 def apply_perturbations_kitchen(bddl_text, perturbations):
-    """Apply perturbations to kitchen scenes (deprecated, use apply_perturbations instead)."""
-    return apply_perturbations(bddl_text, perturbations)
-
-
-def apply_perturbations(bddl_text, perturbations):
     """
-    Apply perturbations to any LIBERO scene type.
-    
-    This is a generic function that works with kitchen, living room, study, and other scene types.
-    It automatically detects the workspace type from the BDDL file.
-    
-    Args:
-        bddl_text: BDDL file content as string
-        perturbations: Dictionary of perturbations to apply
-            - "move": list of object names to move
-            - "reorient": list of object names to reorient
-            - "color": list of object names to change color
-            - "replace": list of object names to replace
-            - "distractor": list of None values (count determines number of distractors)
-    
-    Returns:
-        Modified BDDL text
+    Apply perturbations to BDDL text.
+    If object list is empty or None for a perturbation type, randomly select an object.
     """
     region_blocks = find_region_blocks(bddl_text)
     obj_region_map = parse_object_region_map(bddl_text, region_blocks)
-    target_workspace = extract_target_workspace(bddl_text)
     
-    print(f"[DEBUG] Detected workspace: {target_workspace}")
+    # Get all available objects (excluding fixtures)
+    available_objects = list(extract_declared_objects(bddl_text))
+    
     print(f"[DEBUG] Object-Region mapping: {obj_region_map}")
     print(f"[DEBUG] Available regions: {list(region_blocks.keys())}")
+    print(f"[DEBUG] Available objects: {available_objects}")
 
     for key, obj_list in perturbations.items():
-        for obj_name in obj_list:
-            if key == "move":
-                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks)
+        # Skip if the list is explicitly empty (different from None)
+        if obj_list is None:
+            continue
+            
+        # Handle different perturbation types
+        if key in ["move", "reorient", "color", "replace"]:
+            # If no objects specified, randomly select one
+            if not obj_list:
+                if available_objects:
+                    selected_obj = random.choice(available_objects)
+                    obj_list = [selected_obj]
+                    print(f"[RANDOM] No object specified for '{key}', randomly selected: {selected_obj}")
+                else:
+                    print(f"[WARN] No objects available for '{key}' perturbation")
+                    continue
+            
+            # Apply perturbation to each object
+            for obj_name in obj_list:
+                if obj_name not in available_objects:
+                    print(f"[WARN] Object '{obj_name}' not found in scene, skipping")
+                    continue
+                    
+                if key == "move":
+                    bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks)
+                elif key == "reorient":
+                    bddl_text = reorient_object(bddl_text, obj_name, obj_region_map, region_blocks)
+                elif key == "color":
+                    bddl_text = change_color(bddl_text, obj_name, obj_region_map, region_blocks)
+                elif key == "replace":
+                    bddl_text = replace_object(bddl_text, obj_name)
+                
+                # Refresh region blocks and mapping after each perturbation
                 region_blocks = find_region_blocks(bddl_text)
                 obj_region_map = parse_object_region_map(bddl_text, region_blocks)
-            elif key == "reorient":
-                bddl_text = reorient_object(bddl_text, obj_name, obj_region_map, region_blocks)
-                region_blocks = find_region_blocks(bddl_text)
-                obj_region_map = parse_object_region_map(bddl_text, region_blocks)
-            elif key == "color":
-                bddl_text = change_color(bddl_text, obj_name, obj_region_map, region_blocks)
-                region_blocks = find_region_blocks(bddl_text)
-                obj_region_map = parse_object_region_map(bddl_text, region_blocks)
-            elif key == "replace":
-                bddl_text = replace_object(bddl_text, obj_name, target_workspace)
-                region_blocks = find_region_blocks(bddl_text)
-                obj_region_map = parse_object_region_map(bddl_text, region_blocks)
+                available_objects = list(extract_declared_objects(bddl_text))
 
+    # Handle distractor addition
     if "distractor" in perturbations:
-        for _ in perturbations["distractor"]:
-            bddl_text = add_distractor(bddl_text, target_workspace)
+        num_distractors = perturbations["distractor"]
+        if isinstance(num_distractors, list):
+            num_distractors = num_distractors[0] if num_distractors else 1
+        for _ in range(num_distractors):
+            bddl_text = add_distractor(bddl_text)
 
     return bddl_text
 
@@ -633,6 +571,46 @@ def validate_bddl(bddl_text):
     return True
 
 # --------------------------
+# Helper function to create safe perturbations
+# --------------------------
+
+def create_perturbations(bddl_text, perturbation_config):
+    """
+    Create a safe perturbation dictionary based on available objects.
+    
+    Args:
+        bddl_text: The BDDL text content
+        perturbation_config: Dict with keys like "move", "reorient", etc.
+                            Values can be:
+                            - list of object names: use those specific objects
+                            - empty list []: randomly select from available objects
+                            - integer (for distractor): number of distractors to add
+    
+    Returns:
+        Safe perturbation dictionary with validated objects
+    """
+    available_objects = extract_declared_objects(bddl_text)
+    safe_perturbations = {}
+    
+    for key, value in perturbation_config.items():
+        if key == "distractor":
+            safe_perturbations[key] = value
+        elif isinstance(value, list):
+            if not value:  # Empty list - will be randomly selected
+                safe_perturbations[key] = []
+            else:  # Validate specified objects
+                valid_objects = [obj for obj in value if obj in available_objects]
+                if valid_objects:
+                    safe_perturbations[key] = valid_objects
+                else:
+                    print(f"[WARN] None of the specified objects for '{key}' exist in scene. Will use random selection.")
+                    safe_perturbations[key] = []
+        else:
+            safe_perturbations[key] = value
+    
+    return safe_perturbations
+
+# --------------------------
 # Example usage
 # --------------------------
 
@@ -640,17 +618,49 @@ if __name__ == "__main__":
     input_file = "KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl"
     bddl_text = read_bddl(input_file)
 
-    perturbations = {
-        "move": ["akita_black_bowl_1", "wine_bottle_1"],
-        "reorient": ["wine_bottle_1"],
-        "color": ["wine_bottle_1"],  # Now uses :rgba attribute
-        "replace": ["wine_bottle_1"],
+    # First, check what objects exist in the scene
+    available_objects = extract_declared_objects(bddl_text)
+    print(f"\n[INFO] Available objects in scene: {available_objects}\n")
+    
+    # RECOMMENDED: Use the helper function to create safe perturbations
+    perturbation_config = {
+        "move": ["wine_bottle_1", "akita_black_bowl_1"],  # Will auto-filter to valid objects
+        "reorient": [],     # Random selection
+        "color": [],        # Random selection
+        "replace": [],      # Random selection
         "distractor": [1]
     }
-
-    perturbed_bddl = apply_perturbations_kitchen(bddl_text, perturbations)
+    
+    # Create safe perturbations (validates objects exist)
+    safe_perturbations = create_perturbations(bddl_text, perturbation_config)
+    print(f"[INFO] Safe perturbations: {safe_perturbations}\n")
+    
+    # Apply perturbations
+    perturbed_bddl = apply_perturbations_kitchen(bddl_text, safe_perturbations)
     
     if validate_bddl(perturbed_bddl):
         save_bddl(perturbed_bddl, base_name="LIBERO_Kitchen_Tabletop_Manipulation_perturbed")
     else:
         print("[ERROR] Generated BDDL failed validation. Not saving.")
+    
+    # ========================================
+    # Alternative usage patterns:
+    # ========================================
+    
+    # Pattern 1: All random selection (safest)
+    # perturbations_random = {
+    #     "move": [],
+    #     "reorient": [],
+    #     "color": [],
+    #     "distractor": [1]
+    # }
+    
+    # Pattern 2: Use specific objects if you know they exist
+    # First check available_objects, then specify:
+    # perturbations_specific = {
+    #     "move": [list(available_objects)[0]] if available_objects else [],
+    #     "color": [list(available_objects)[0]] if available_objects else [],
+    # }
+    
+    # Pattern 3: Use create_perturbations for safety (RECOMMENDED)
+    # This will automatically filter out non-existent objects
