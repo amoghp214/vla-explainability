@@ -12,8 +12,8 @@ import torch
 from pathlib import Path
 from typing import List, Dict, Any
 
-# Add project root to path if not already present
-project_root = Path(__file__).parent.parent
+# Add project root to path if not already present (resolve to absolute path)
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 

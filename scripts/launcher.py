@@ -25,8 +25,8 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import copy
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
+# Add project root to path (resolve to absolute path)
+project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import perturbation utilities
@@ -38,6 +38,7 @@ if perturbation_utils_path.exists():
     spec.loader.exec_module(pert_utils)
     read_bddl = pert_utils.read_bddl
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
+    apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
     validate_bddl = pert_utils.validate_bddl
 else:
     raise ImportError(f"Could not find perturbation utilities at {perturbation_utils_path}")
@@ -178,9 +179,9 @@ class Launcher:
                     perturbations[pert_type] = []
                 perturbations[pert_type].extend(objects)
             
-            # Apply perturbations
+            # Apply perturbations (use generic function for all scene types)
             try:
-                perturbed_bddl = apply_perturbations_kitchen(
+                perturbed_bddl = apply_perturbations(
                     copy.deepcopy(base_bddl_text), 
                     perturbations
                 )
