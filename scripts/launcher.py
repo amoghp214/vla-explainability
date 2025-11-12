@@ -298,16 +298,46 @@ class Launcher:
         # Build job script
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={slurm_config['job_name_prefix']}_{perturbation_id}
-#SBATCH --account={job_params['account']}
-#SBATCH --partition={job_params['partition']}
 #SBATCH --time={job_params['time']}
 #SBATCH --nodes={job_params['nodes']}
 #SBATCH --ntasks-per-node={job_params['ntasks_per_node']}
 #SBATCH --cpus-per-task={job_params['cpus_per_task']}
-#SBATCH --mem={job_params['mem']}
-#SBATCH --gres=gpu:{job_params['gpu_type']}:{job_params['gpus']}
-#SBATCH --output={self.logs_dir}/{perturbation_id}_%j.out
+"""
+        
+        # Add partition if specified (optional for PACE-ICE)
+        if job_params.get('partition'):
+            script_content += f"#SBATCH --partition={job_params['partition']}\n"
+        
+        # Add memory specification
+        if job_params.get('mem'):
+            script_content += f"#SBATCH --mem={job_params['mem']}\n"
+        
+        # Add GPU specification (PACE-ICE format: --gres=gpu:<type>:<number>)
+        if job_params.get('gpus', 0) > 0:
+            gpu_type = job_params.get('gpu_type', 'V100')
+            num_gpus = job_params['gpus']
+            script_content += f"#SBATCH --gres=gpu:{gpu_type}:{num_gpus}\n"
+        
+        # Add constraint if specified (for specific GPU models)
+        if job_params.get('constraint'):
+            script_content += f"#SBATCH -C {job_params['constraint']}\n"
+            
+        # Add blacklisted nodes if specified
+        blacklisted_nodes = job_params.get('blacklisted_nodes', [])
+        if blacklisted_nodes:
+            # Convert list to comma-separated string
+            if isinstance(blacklisted_nodes, list):
+                node_list = ','.join(str(node) for node in blacklisted_nodes)
+            else:
+                node_list = str(blacklisted_nodes)
+            script_content += f"#SBATCH --exclude={node_list}\n"
+        
+        # Add output files
+        script_content += f"""#SBATCH --output={self.logs_dir}/{perturbation_id}_%j.out
 #SBATCH --error={self.logs_dir}/{perturbation_id}_%j.err
+
+# Change to submission directory
+cd $SLURM_SUBMIT_DIR
 
 # Load modules if specified
 """
@@ -321,6 +351,8 @@ conda activate {slurm_config['conda_env']}
 
 # Change to project directory
 cd {project_root}
+
+pip install -e .
 
 # Run record script
 python scripts/record.py --config {config_file}

@@ -5,17 +5,17 @@
 # Base Task Configuration
 # =============================================================================
 model: openvla
-task_suite_name: libero_spatial
+task_suite_name: libero_10
 device: cuda:0
 cache_dir: /home/hice1/vkulkarni46/scratch/huggingface  # Replace with your cache directory
 
 # Original BDDL file (will be used as base for perturbations)
-base_bddl_file: ../libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate.bddl
-base_prompt: pick up the black bowl next to the cookie box and place it on the plate
+base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
+base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 
 # Recording parameters
 action_scale: 1.0
-num_demos: 5  # Number of demonstrations to record per perturbation
+num_demos: 2  # Number of demonstrations to record per perturbation
 noise_std: 0.001  # Gaussian noise std deviation for action deltas
 
 # =============================================================================
@@ -23,7 +23,7 @@ noise_std: 0.001  # Gaussian noise std deviation for action deltas
 # =============================================================================
 perturbations:
   # Number of perturbations to generate
-  num_perturbations: 10
+  num_perturbations: 6
   
   # Perturbation types to generate
   # Options: bddl_spatial, language
@@ -37,15 +37,11 @@ perturbations:
     # Each entry is a dict with perturbation type and target objects
     perturbation_specs:
       - type: move
-        objects: ["akita_black_bowl_1"]
-      - type: reorient
-        objects: ["akita_black_bowl_1"]
-      - type: color
-        objects: ["akita_black_bowl_1"]
-      - type: move
         objects: ["akita_black_bowl_1", "wine_bottle_1"]
       - type: reorient
-        objects: ["wine_bottle_1"]
+        objects: ["akita_black_bowl_1", "wine_bottle_1"]
+      - type: color
+        objects: ["akita_black_bowl_1"]
       - type: distractor
         count: 1
       - type: replace
@@ -65,19 +61,22 @@ slurm:
   
   # Job parameters
   job_params:
-    account: your_account  # Replace with your PACE account
-    partition: gpu  # GPU partition name
-    time: "02:00:00"  # Time limit (HH:MM:SS)
+    partition: null  # Optional - can omit for auto-select
+    time: "02:00:00"
     nodes: 1
     ntasks_per_node: 1
     cpus_per_task: 4
     mem: 16G
     gpus: 1
-    gpu_type: "v100"  # or "a100", "p100", etc.
+    gpu_type: "V100"
+    constraint: null  # Optional: "V100-32GB", "A100-80GB", etc.
+    blacklisted_nodes: ["atl1-1-01-002-8-0"]  # Optional: List of node names to exclude from job allocation
+                           # Example: ["node001", "node002"] or ["node[001-005]"]
+                           # Uses SLURM --exclude flag to prevent jobs from running on problematic nodes
   
   # Environment setup
-  conda_env: vla-explainability  # Conda environment name
-  module_load: []  # List of modules to load (e.g., ["cuda/11.8"])
+  conda_env: /home/hice1/vkulkarni46/scratch/envs/xAI # Conda environment name
+  module_load: ["anaconda3/2023.03", "cuda/12.6.1"]  # List of modules to load (e.g., ["cuda/11.8"])
   
   # Job script template variables
   job_name_prefix: "vla_record"
