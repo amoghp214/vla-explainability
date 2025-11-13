@@ -42,7 +42,7 @@ def calculate_vla_metric(
         float: the VLA metric (-inf, inf) between the unperturbed and perturbed episodes.
     """
     assert min(w_result, w_time, w_trajectory) >= 0, "Each metric weight must be non-negative."
-    assert sum(w_result, w_time, w_trajectory) != 0, "Metric weights must not sum to 0."
+    assert sum([w_result, w_time, w_trajectory]) != 0, "Metric weights must not sum to 0."
     
     metric_weights = np.array([w_result, w_time, w_trajectory])
     metric_weights = metric_weights / np.linalg.norm(metric_weights)
@@ -65,8 +65,8 @@ def calculate_success_metric(unperturbed_episode_results, perturbed_episode_resu
     Returns:
         float: the difference in success rate between the unperturbed and perturbed episodes. 
     """
-    assert torch.all(torch.unique(unperturbed_episode_results) == torch.tensor([0,1])), "The results of the unperturbed episode trials must be either 0 (unsuccessful) or 1 (successful)."
-    assert torch.all(torch.unique(perturbed_episode_results) == torch.tensor([0,1])), "The results of the perturbed episode trials must be either 0 (unsuccessful) or 1 (successful)."
+    assert torch.all((unperturbed_episode_results == 0) | (unperturbed_episode_results == 1)), "The results of the unperturbed episode trials must be either 0 (unsuccessful) or 1 (successful)."
+    assert torch.all((perturbed_episode_results == 0) | (perturbed_episode_results == 1)), "The results of the perturbed episode trials must be either 0 (unsuccessful) or 1 (successful)."
     average_unperturbed_success_rate = torch.mean(unperturbed_episode_results.float())
     average_perturbed_success_rate = torch.mean(perturbed_episode_results.float())
     success_rate_difference = torch.abs(average_unperturbed_success_rate - average_perturbed_success_rate)

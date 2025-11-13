@@ -298,6 +298,7 @@ class Launcher:
         # Build job script
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={slurm_config['job_name_prefix']}_{perturbation_id}
+#SBATCH --account={job_params['account']}
 #SBATCH --time={job_params['time']}
 #SBATCH --nodes={job_params['nodes']}
 #SBATCH --ntasks-per-node={job_params['ntasks_per_node']}
@@ -346,13 +347,29 @@ cd $SLURM_SUBMIT_DIR
             script_content += f"module load {module}\n"
         
         script_content += f"""
+# Initialize conda (try common locations)
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source $HOME/miniconda3/etc/profile.d/conda.sh
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source $HOME/anaconda3/etc/profile.d/conda.sh
+elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
+    source /opt/conda/etc/profile.d/conda.sh
+fi
+
 # Activate conda environment
 conda activate {slurm_config['conda_env']}
 
 # Change to project directory
 cd {project_root}
 
-pip install -e .
+# Install/update package in editable mode
+# Try to import first - if it fails, install. If install fails, the job should fail.
+if ! python -c "import libero" 2>/dev/null; then
+    echo "Installing libero package..."
+    pip install -e . || {{ echo "ERROR: Failed to install libero package"; exit 1; }}
+else
+    echo "libero package already installed, skipping installation"
+fi
 
 # Run record script
 python scripts/record.py --config {config_file}

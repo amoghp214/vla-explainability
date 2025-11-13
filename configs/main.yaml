@@ -61,7 +61,8 @@ slurm:
   
   # Job parameters
   job_params:
-    partition: null  # Optional - can omit for auto-select
+    partition: "coc-gpu"  # Optional - can omit for auto-select
+    account: "coc"      # Optional - can omit for default account
     time: "02:00:00"
     nodes: 1
     ntasks_per_node: 1
