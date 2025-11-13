@@ -131,7 +131,8 @@ class Launcher:
             'bddl_file': str(unperturbed_bddl_path),
             'config_file': str(unperturbed_config_path),
             'prompt': self.config['base_prompt'],
-            'type': 'baseline'
+            'type': 'baseline',
+            'description': 'Baseline unperturbed task'
         })
         
         # Generate perturbed versions
@@ -206,13 +207,30 @@ class Launcher:
                 with open(config_path, 'w') as f:
                     yaml.dump(pert_config_path, f)
                 
+                # Generate description
+                if pert_type == 'distractor':
+                    count = spec.get('count', 1)
+                    description = f"Added {count} distractor object(s) to the scene"
+                else:
+                    objects = spec.get('objects', [])
+                    pert_type_names = {
+                        'move': 'moved',
+                        'reorient': 'reoriented',
+                        'color': 'changed color of',
+                        'replace': 'replaced'
+                    }
+                    action = pert_type_names.get(pert_type, pert_type)
+                    obj_list = ', '.join(objects)
+                    description = f"{action.capitalize()} {obj_list}"
+                
                 self.perturbation_info.append({
                     'id': f'perturbed_{pert_id}',
                     'bddl_file': str(pert_bddl_path),
                     'config_file': str(config_path),
                     'prompt': self.config['base_prompt'],
                     'type': f'bddl_spatial_{pert_type}',
-                    'perturbations': perturbations
+                    'perturbations': perturbations,
+                    'description': description
                 })
                 
                 pert_id += 1
@@ -249,13 +267,39 @@ class Launcher:
             with open(config_path, 'w') as f:
                 yaml.dump(pert_config, f)
             
+            # Generate description for language perturbation
+            pert_descriptions = {
+                'keyboard': 'Keyboard typo',
+                'ocr': 'OCR error simulation',
+                'ci': 'Concatenation/insertion',
+                'cr': 'Character replacement',
+                'cs': 'Character swap',
+                'cd': 'Character deletion',
+                'ws': 'Word swap',
+                'wd': 'Word deletion',
+                'ip': 'Insert punctuation',
+                'paraphrase0': 'Paraphrase variant 0',
+                'paraphrase1': 'Paraphrase variant 1',
+                'paraphrase2': 'Paraphrase variant 2',
+                'paraphrase3': 'Paraphrase variant 3',
+                'paraphrase4': 'Paraphrase variant 4'
+            }
+            
+            # Handle word deletion variants
+            if pert_name.startswith('wd_all_'):
+                idx = pert_name.split('_')[-1]
+                description = f'Word deletion (removed word at position {idx})'
+            else:
+                description = pert_descriptions.get(pert_name, f'Language perturbation: {pert_name}')
+            
             self.perturbation_info.append({
                 'id': f'perturbed_{pert_id}',
                 'bddl_file': str(pert_bddl_path),
                 'config_file': str(config_path),
                 'prompt': pert_prompt,
                 'type': f'language_{pert_name}',
-                'original_prompt': base_prompt
+                'original_prompt': base_prompt,
+                'description': description
             })
             
             pert_id += 1
@@ -272,6 +316,10 @@ class Launcher:
         # Output file path
         out_file = self.results_dir / f"{perturbation_id}.hdf5"
         
+        # Videos directory for playback
+        videos_dir = self.results_dir / "videos"
+        videos_dir.mkdir(exist_ok=True)
+        
         config = {
             'model': self.config['model'],
             'task_suite_name': self.config['task_suite_name'],
@@ -280,7 +328,7 @@ class Launcher:
             'bddl_file': str(bddl_path),
             'prompt': prompt,
             'out_file': str(out_file),
-            'record_path': str(self.results_dir / f"{perturbation_id}.mp4"),
+            'record_path': str(videos_dir / f"{perturbation_id}.mp4"),
             'action_scale': self.config.get('action_scale', 1.0),
             'num_demos': self.config.get('num_demos', 1),
             'noise_std': self.config.get('noise_std', 0.0),
@@ -490,6 +538,60 @@ echo "Job completed: {perturbation_id}"
         with open(self.run_dir / "job_summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
     
+    def render_videos(self):
+        """Render videos for all completed recordings using playback.py."""
+        print("\n[INFO] Rendering videos for completed recordings...")
+        
+        videos_dir = self.results_dir / "videos"
+        videos_dir.mkdir(exist_ok=True)
+        
+        rendered_count = 0
+        
+        # Render unperturbed video
+        unperturbed_hdf5 = self.results_dir / "unperturbed.hdf5"
+        if unperturbed_hdf5.exists():
+            unperturbed_config = self.config_dir / "unperturbed.yaml"
+            if unperturbed_config.exists():
+                print(f"[INFO] Rendering unperturbed video...")
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(project_root / "scripts" / "playback.py"),
+                        "--config", str(unperturbed_config)
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True)
+                    output_video = videos_dir / "unperturbed.mp4"
+                    print(f"  ✓ Rendered: {output_video}")
+                    rendered_count += 1
+                except subprocess.CalledProcessError as e:
+                    print(f"  ✗ Failed to render unperturbed video: {e}")
+        
+        # Render perturbed videos
+        for pert_info in self.perturbation_info:
+            if pert_info['id'] == 'unperturbed':
+                continue
+            
+            pert_id = pert_info['id']
+            pert_hdf5 = self.results_dir / f"{pert_id}.hdf5"
+            pert_config = Path(pert_info['config_file'])
+            
+            if pert_hdf5.exists() and pert_config.exists():
+                print(f"[INFO] Rendering {pert_id} video...")
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(project_root / "scripts" / "playback.py"),
+                        "--config", str(pert_config)
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True)
+                    output_video = videos_dir / f"{pert_id}.mp4"
+                    print(f"  ✓ Rendered: {output_video}")
+                    rendered_count += 1
+                except subprocess.CalledProcessError as e:
+                    print(f"  ✗ Failed to render {pert_id} video: {e}")
+        
+        print(f"\n[INFO] Rendered {rendered_count} video(s) to {videos_dir}")
+    
     def run_evaluation(self):
         """Run evaluation scripts after all jobs complete."""
         eval_config = self.config.get('evaluation', {})
@@ -579,7 +681,10 @@ echo "Job completed: {perturbation_id}"
         # Step 2: Dispatch jobs
         self.dispatch_jobs()
         
-        # Step 3: Run evaluation
+        # Step 3: Render videos
+        self.render_videos()
+        
+        # Step 4: Run evaluation
         self.run_evaluation()
         
         print("\n" + "=" * 80)

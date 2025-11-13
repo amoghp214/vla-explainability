@@ -112,7 +112,3 @@ evaluation:
   output_formats:
     - json
     - hdf5
-  
-  # Generate visualizations
-  generate_visualizations: true
-

@@ -18,7 +18,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.demo_loader import load_all_robot_states
-from explainability.vla_metrics import calculate_vla_metric
+from explainability.vla_metrics import calculate_vla_metric, get_dtw_trajectory_distance_matrix, calculate_wasserstein_1_dist
+from explainability.vla_metrics import calculate_dtw_trajectory_difference
+from explainability.data_visualization import visualize_trajectory_difference
 
 
 def run_analysis(
@@ -61,6 +63,11 @@ def run_analysis(
     # Convert trajectory weights to numpy array
     traj_weights = np.array(trajectory_weights)
     
+    # Create visualizations directory
+    output_path = Path(output_file)
+    viz_dir = output_path.parent / "visualizations"
+    viz_dir.mkdir(exist_ok=True)
+    
     # Analyze each perturbed file
     for pert_file in perturbed_files:
         pert_id = Path(pert_file).stem
@@ -85,10 +92,61 @@ def run_analysis(
                 W=traj_weights
             )
             
+            # Generate trajectory visualizations
+            # Find best matching pair using Wasserstein distance
+            if len(unperturbed_trajs) > 0 and len(perturbed_trajs) > 0:
+                # Calculate distance matrix to find best match
+                distance_matrix = get_dtw_trajectory_distance_matrix(
+                    unperturbed_trajs, perturbed_trajs, traj_weights
+                )
+                
+                # Use first trajectory pair for visualization (or best match)
+                # For simplicity, use first unperturbed and first perturbed
+                # In practice, you might want to use the optimal assignment
+                unpert_traj = unperturbed_trajs[0]
+                pert_traj = perturbed_trajs[0]
+                
+                # Calculate DTW with triangles for visualization
+                try:
+                    dtw_area, warp_path, triangles = calculate_dtw_trajectory_difference(
+                        unpert_traj, pert_traj, traj_weights
+                    )
+                    
+                    # Convert warp_path to lines for visualization
+                    lines = None
+                    if warp_path is not None and len(warp_path) > 0:
+                        # Create lines connecting matched points in warp path
+                        lines = []
+                        for i in range(len(warp_path) - 1):
+                            idx1, idx2 = warp_path[i]
+                            next_idx1, next_idx2 = warp_path[i + 1]
+                            # Create line segment connecting consecutive matched points
+                            # Line from unperturbed point to next matched perturbed point
+                            line = np.array([
+                                unpert_traj[idx1, :3],  # Start: XYZ from unperturbed
+                                pert_traj[next_idx2, :3]  # End: XYZ from perturbed
+                            ])
+                            lines.append(line)
+                        if lines:
+                            lines = np.array(lines)
+                    
+                    # Generate visualization
+                    viz_file = viz_dir / f"{pert_id}_trajectory_diff.html"
+                    visualize_trajectory_difference(
+                        unpert_traj, pert_traj, 
+                        triangles=triangles, 
+                        lines=lines,
+                        output_file=str(viz_file)
+                    )
+                    print(f"  Generated visualization: {viz_file}")
+                except Exception as viz_e:
+                    print(f"  Warning: Could not generate visualization: {viz_e}")
+            
             results[pert_id] = {
                 'metric': float(metric),
                 'num_demos': len(perturbed_trajs),
-                'avg_length': float(torch.mean(perturbed_lengths))
+                'avg_length': float(torch.mean(perturbed_lengths)),
+                'visualization': str(viz_dir / f"{pert_id}_trajectory_diff.html")
             }
             print(f"  Metric: {metric:.4f}")
         except Exception as e:
