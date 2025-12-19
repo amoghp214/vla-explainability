@@ -1,5 +1,5 @@
-name: /home/hice1/vkulkarni46/scratch/envs/xAI
-# name: vla-e
+# name: /home/hice1/vkulkarni46/scratch/envs/xAI
+name: vla-e
 channels:
   - defaults
 dependencies:
@@ -78,6 +78,7 @@ dependencies:
       - jupyter-core==5.8.1
       - jupytext==1.17.1
       - kiwisolver==1.4.7
+      - libero # we need to add this
       - llvmlite==0.41.1
       - markdown==3.7
       - markdown-it-py==3.0.0
@@ -159,4 +160,5 @@ dependencies:
       - wandb==0.13.1
       - werkzeug==3.0.6
       - zipp==3.20.2
-prefix: /home/hice1/vkulkarni46/scratch/envs/xAI
+# prefix: /home/hice1/vkulkarni46/scratch/envs/xAI
+prefix: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e

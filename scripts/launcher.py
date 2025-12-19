@@ -396,13 +396,13 @@ cd $SLURM_SUBMIT_DIR
         
         script_content += f"""
 # Initialize conda (try common locations)
-if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/miniconda3/etc/profile.d/conda.sh
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/anaconda3/etc/profile.d/conda.sh
-elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
-    source /opt/conda/etc/profile.d/conda.sh
-fi
+# if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+#     source $HOME/miniconda3/etc/profile.d/conda.sh
+# elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+#     source $HOME/anaconda3/etc/profile.d/conda.sh
+# elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
+#     source /opt/conda/etc/profile.d/conda.sh
+# fi
 
 # Activate conda environment
 conda activate {slurm_config['conda_env']}
@@ -618,6 +618,9 @@ echo "Job completed: {perturbation_id}"
         if not perturbed_files:
             print("[WARN] No perturbed files found for evaluation")
             return
+
+        env = os.environ.copy()
+        env['PYTHONPATH'] = str(project_root) + ":" + env.get('PYTHONPATH', '')
         
         # Convert to JSON if needed
         if 'json' in eval_config.get('output_formats', []):
@@ -635,7 +638,7 @@ echo "Job completed: {perturbation_id}"
             ]
             
             print(f"[INFO] Converting to JSON: {json_output}")
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, env=env)
         
         # Run analysis using episodic_explanation functions
         self._run_analysis(unperturbed_file, perturbed_files, eval_config)
