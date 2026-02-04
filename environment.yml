@@ -34,6 +34,7 @@ dependencies:
       - accelerate==1.0.1
       - antlr4-python3-runtime==4.9.3
       - attrs==25.3.0
+      - bayesian-optimization==1.4.3
       - bddl==1.0.1
       - bitsandbytes==0.45.5
       - cachetools==5.5.2
