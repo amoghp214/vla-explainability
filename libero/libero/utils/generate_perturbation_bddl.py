@@ -190,10 +190,75 @@ def supports_attributes(region_name, bddl_text):
     return True
 
 # --------------------------
+# Init range utilities
+# --------------------------
+
+RANGES_PATTERN = re.compile(
+    r":ranges\s*\(\s*\(\s*([-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+)\s*\)",
+    re.DOTALL,
+)
+
+
+def _collapse_ranges_to_center(coords):
+    """Collapse rectangle (x_min, y_min, x_max, y_max) to center point for exact init."""
+    x_min, y_min, x_max, y_max = coords
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+    return [center_x, center_y, center_x, center_y]
+
+
+def fix_init_ranges(bddl_text, init_object_range_m=0.0):
+    """
+    Fix region ranges for deterministic initialization.
+
+    When init_object_range_m == 0: collapse all region ranges to their center point
+    (exact initialization). When init_object_range_m > 0: collapse to center and
+    optionally expand by tolerance (currently same as 0 for deterministic base).
+
+    Args:
+        bddl_text: BDDL file content
+        init_object_range_m: Valid init range in meters. 0 = exact init (collapse to center).
+
+    Returns:
+        Modified BDDL text with fixed ranges.
+    """
+    region_blocks = find_region_blocks(bddl_text)
+    result = bddl_text
+
+    for region_name, (start, end) in region_blocks.items():
+        block = result[start:end]
+        match = RANGES_PATTERN.search(block)
+        if match:
+            coords = list(map(float, match.group(1).split()))
+            if init_object_range_m <= 0:
+                new_coords = _collapse_ranges_to_center(coords)
+            else:
+                new_coords = _collapse_ranges_to_center(coords)
+                half = init_object_range_m / 2
+                new_coords = [
+                    new_coords[0] - half, new_coords[1] - half,
+                    new_coords[0] + half, new_coords[1] + half,
+                ]
+            new_range = " ".join(f"{x:.6g}" for x in new_coords)
+            block = block[: match.start(1)] + new_range + block[match.end(1) :]
+            result = result[:start] + block + result[end:]
+    return result
+
+
+# --------------------------
 # Perturbation functions
 # --------------------------
 
-def move_object(bddl_text, obj_name, obj_region_map, region_blocks):
+def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m=0.0, max_move_m=0.05):
+    """
+    Move object's init region. Shifts center in X/Z (table plane); no Y (vertical).
+
+    - init_object_range_m: Size of init region. 0 = point; >0 = box. Used for both unperturbed and perturbed.
+    - max_move_m: Max distance (m) from unperturbed center that the object can be shifted (x/z, diagonal ok).
+
+    The perturbed init region is: center = unperturbed_center + (dx, dz), where |dx|,|dz| <= max_move_m;
+    region size = init_object_range_m.
+    """
     region_name = obj_region_map.get(obj_name)
     if not region_name or region_name not in region_blocks:
         print(f"[WARN] Region not found for {obj_name} (looking for '{region_name}')")
@@ -202,21 +267,34 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks):
     start, end = region_blocks[region_name]
     block = bddl_text[start:end]
 
-    match = re.search(r":ranges\s*\(\s*\(\s*([-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+\s+[-+]?[0-9]*\.?[0-9]+)\s*\)", block, re.DOTALL)
-    if match:
-        coords = list(map(float, match.group(1).split()))
-        direction = random.choice(["left", "right", "up", "down"])
-        offset = round(random.uniform(0.01, 0.05), 3)
-        if direction in ["left", "right"]:
-            delta = offset if direction == "right" else -offset
-            coords = [coords[i] + delta if i % 2 == 0 else coords[i] for i in range(4)]
-        else:
-            delta = offset if direction == "up" else -offset
-            coords = [coords[i] + delta if i % 2 == 1 else coords[i] for i in range(4)]
-        new_range = " ".join(map(lambda x: f"{x:.3f}", coords))
-        block = block[:match.start(1)] + new_range + block[match.end(1):]
-        print(f"[MOVE] {obj_name} moved {direction} by {offset}")
-        bddl_text = bddl_text[:start] + block + bddl_text[end:]
+    match = RANGES_PATTERN.search(block)
+    if not match:
+        return bddl_text
+
+    coords = list(map(float, match.group(1).split()))
+    unperturbed_center_x = (coords[0] + coords[2]) / 2
+    unperturbed_center_z = (coords[1] + coords[3]) / 2
+
+    # Shift center by up to max_move_m in x and z (diagonal ok)
+    delta_x = round(random.uniform(-max_move_m, max_move_m), 4)
+    delta_z = round(random.uniform(-max_move_m, max_move_m), 4)
+    new_center_x = unperturbed_center_x + delta_x
+    new_center_z = unperturbed_center_z + delta_z
+
+    # Init region size: 0 = point; >0 = box
+    if init_object_range_m <= 0:
+        new_coords = [new_center_x, new_center_z, new_center_x, new_center_z]
+    else:
+        half = init_object_range_m / 2
+        new_coords = [
+            new_center_x - half, new_center_z - half,
+            new_center_x + half, new_center_z + half,
+        ]
+    print(f"[MOVE] {obj_name} shifted center by (dx={delta_x}, dz={delta_z}) m, init_range={init_object_range_m}m")
+
+    new_range = " ".join(f"{x:.6g}" for x in new_coords)
+    block = block[: match.start(1)] + new_range + block[match.end(1) :]
+    bddl_text = bddl_text[:start] + block + bddl_text[end:]
     return bddl_text
 
 def reorient_object(bddl_text, obj_name, obj_region_map, region_blocks):
@@ -507,18 +585,15 @@ def add_distractor(bddl_text, target_workspace=None):
 # Apply perturbations
 # --------------------------
 
-def apply_perturbations_kitchen(bddl_text, perturbations):
+def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05):
     """Apply perturbations to kitchen scenes (deprecated, use apply_perturbations instead)."""
-    return apply_perturbations(bddl_text, perturbations)
+    return apply_perturbations(bddl_text, perturbations, init_object_range_m, max_move_m)
 
 
-def apply_perturbations(bddl_text, perturbations):
+def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05):
     """
     Apply perturbations to any LIBERO scene type.
-    
-    This is a generic function that works with kitchen, living room, study, and other scene types.
-    It automatically detects the workspace type from the BDDL file.
-    
+
     Args:
         bddl_text: BDDL file content as string
         perturbations: Dictionary of perturbations to apply
@@ -527,22 +602,25 @@ def apply_perturbations(bddl_text, perturbations):
             - "color": list of object names to change color
             - "replace": list of object names to replace
             - "distractor": list of None values (count determines number of distractors)
-    
+        init_object_range_m: Size of init region (m). 0 = point; >0 = box. Used for both unperturbed and perturbed.
+        max_move_m: Max distance (m) from unperturbed center that move can shift the object.
+
     Returns:
         Modified BDDL text
     """
     region_blocks = find_region_blocks(bddl_text)
     obj_region_map = parse_object_region_map(bddl_text, region_blocks)
     target_workspace = extract_target_workspace(bddl_text)
-    
+
     print(f"[DEBUG] Detected workspace: {target_workspace}")
     print(f"[DEBUG] Object-Region mapping: {obj_region_map}")
     print(f"[DEBUG] Available regions: {list(region_blocks.keys())}")
+    print(f"[DEBUG] init_object_range_m: {init_object_range_m}, max_move_m: {max_move_m}")
 
     for key, obj_list in perturbations.items():
         for obj_name in obj_list:
             if key == "move":
-                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks)
+                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m, max_move_m)
                 region_blocks = find_region_blocks(bddl_text)
                 obj_region_map = parse_object_region_map(bddl_text, region_blocks)
             elif key == "reorient":

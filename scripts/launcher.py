@@ -40,6 +40,7 @@ if perturbation_utils_path.exists():
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
     apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
     validate_bddl = pert_utils.validate_bddl
+    fix_init_ranges = getattr(pert_utils, 'fix_init_ranges', lambda t, r=0: t)
 else:
     raise ImportError(f"Could not find perturbation utilities at {perturbation_utils_path}")
 
@@ -110,8 +111,17 @@ class Launcher:
         
         # Read base BDDL
         base_bddl_text = read_bddl(str(base_bddl))
-        
-        # Copy base BDDL (unperturbed)
+
+        # Init object range (m): size of spawn region. 0 = point; >0 = box. Used for unperturbed and perturbed.
+        init_object_range_m = self.config.get('init_object_range_m', 0.0)
+        pert_config = self.config.get('perturbations', {})
+        if 'bddl_spatial' in pert_config:
+            init_object_range_m = pert_config['bddl_spatial'].get('init_object_range_m', init_object_range_m)
+
+        # Fix init ranges (sets region size for unperturbed; perturbed move uses same size)
+        base_bddl_text = fix_init_ranges(base_bddl_text, init_object_range_m=init_object_range_m)
+
+        # Copy base BDDL (unperturbed) with fixed ranges
         unperturbed_bddl_path = self.bddl_dir / "unperturbed.bddl"
         with open(unperturbed_bddl_path, 'w') as f:
             f.write(base_bddl_text)
@@ -161,14 +171,16 @@ class Launcher:
     def _generate_bddl_spatial_perturbations(self, base_bddl_text: str, start_id: int) -> int:
         """Generate BDDL spatial perturbations."""
         pert_config = self.config['perturbations']['bddl_spatial']
+        init_object_range_m = pert_config.get('init_object_range_m', 0.0)
         specs = pert_config.get('perturbation_specs', [])
         
         pert_id = start_id
         
         for spec in specs:
             pert_type = spec['type']
-            
-            # Build perturbation dict for apply_perturbations_kitchen
+            max_move_m = pert_config.get('max_move_m', 0.05)
+
+            # Build perturbation dict for apply_perturbations
             perturbations = {}
             
             if pert_type == 'distractor':
@@ -180,11 +192,17 @@ class Launcher:
                     perturbations[pert_type] = []
                 perturbations[pert_type].extend(objects)
             
+            # Per-spec override for max_move_m (only applies to type: move)
+            if pert_type == 'move':
+                max_move_m = spec.get('max_move_m', max_move_m)
+            
             # Apply perturbations (use generic function for all scene types)
             try:
                 perturbed_bddl = apply_perturbations(
-                    copy.deepcopy(base_bddl_text), 
-                    perturbations
+                    copy.deepcopy(base_bddl_text),
+                    perturbations,
+                    init_object_range_m=init_object_range_m,
+                    max_move_m=max_move_m,
                 )
                 
                 # Validate
