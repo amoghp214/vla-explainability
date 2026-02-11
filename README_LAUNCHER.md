@@ -36,6 +36,43 @@ slurm:
 python scripts/launcher.py --config configs/main.yaml
 ```
 
+## Local step-by-step (one perturbation)
+
+To try a single perturbation locally without SLURM:
+
+**1. Generate perturbations only** (writes BDDL files and record configs to a local directory):
+
+```bash
+python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
+```
+
+This creates `./local_run/` with:
+- `bddl_files/` — `unperturbed.bddl`, `perturbed_0.bddl`, ...
+- `configs/` — `unperturbed.yaml`, `perturbed_0.yaml`, ... (one per perturbation)
+- `perturbation_manifest.json` — list of all perturbations and descriptions
+
+**2. (Optional) Adjust config for your machine**  
+Edit `./local_run/configs/<id>.yaml` if needed (e.g. `device`, `cache_dir`, `num_demos`).
+
+**3. Record one run locally** (e.g. unperturbed or a specific perturbation):
+
+```bash
+# From project root
+python scripts/record.py --config ./local_run/configs/unperturbed.yaml
+# or
+python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
+```
+
+This writes `./local_run/results/<id>.hdf5`.
+
+**4. (Optional) Render video from the recording:**
+
+```bash
+python scripts/playback.py --config ./local_run/configs/perturbed_0.yaml
+```
+
+Summary: **generate-only** → **record one config** → **playback** (optional). No SLURM or batch jobs.
+
 ## Directory Structure
 
 The launcher creates a run directory in your scratch folder (or as specified in `run_base_dir`):
