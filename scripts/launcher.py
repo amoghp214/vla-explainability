@@ -43,6 +43,7 @@ if perturbation_utils_path.exists():
     spec.loader.exec_module(pert_utils)
     read_bddl = pert_utils.read_bddl
     fix_init_ranges = getattr(pert_utils, 'fix_init_ranges', lambda t, **kw: t)
+    generate_move_spec_dict = getattr(pert_utils, 'generate_move_spec_dict', lambda *a, **k: {})
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
     apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
     validate_bddl = pert_utils.validate_bddl
@@ -207,6 +208,15 @@ class Launcher:
                     perturbations[pert_type] = []
                 perturbations[pert_type].extend(objects)
             
+            # Build perturbation_spec_dict in code (one per file). For move: generate centers; control/others: None.
+            perturbation_spec_dict = None
+            if pert_type == 'move':
+                objects = spec.get('objects', [])
+                perturbation_spec_dict = generate_move_spec_dict(
+                    base_bddl_text, objects, max_move_m=spec_max_move_m
+                )
+            # control, reorient, color, replace, distractor: no spec dict
+
             # Apply perturbations (use generic function for all scene types)
             try:
                 perturbed_bddl = apply_perturbations(
@@ -215,6 +225,7 @@ class Launcher:
                     init_object_range_m=init_object_range_m,
                     max_move_m=spec_max_move_m,
                     max_init_range_m=max_init_range_m,
+                    perturbation_spec_dict=perturbation_spec_dict,
                 )
                 
                 # Validate

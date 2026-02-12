@@ -265,12 +265,47 @@ def fix_init_ranges(bddl_text, init_object_range_m=0.0, max_init_range_m=0.001):
 # Perturbation functions
 # --------------------------
 
-def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
+def generate_move_spec_dict(bddl_text, object_names, max_move_m=0.05):
+    """
+    Generate one perturbation spec dict for "move" by sampling new centers within max_move_m of unperturbed.
+
+    Args:
+        bddl_text: BDDL file content (with init region ranges).
+        object_names: List of object names to move (e.g. ["akita_black_bowl_1", "wine_bottle_1"]).
+        max_move_m: Max distance (m) from unperturbed center for sampling new (x, z).
+
+    Returns:
+        Spec dict: {"move": {obj_name: [center_x, center_z], ...}} in table-plane coords.
+    """
+    region_blocks = find_region_blocks(bddl_text)
+    obj_region_map = parse_object_region_map(bddl_text, region_blocks)
+    move_spec = {}
+    for obj_name in object_names:
+        region_name = obj_region_map.get(obj_name)
+        if not region_name or region_name not in region_blocks:
+            print(f"[WARN] generate_move_spec_dict: region not found for {obj_name}, skipping")
+            continue
+        start, end = region_blocks[region_name]
+        block = bddl_text[start:end]
+        match = RANGES_PATTERN.search(block)
+        if not match:
+            continue
+        coords = list(map(float, match.group(1).split()))
+        cx = (coords[0] + coords[2]) / 2
+        cz = (coords[1] + coords[3]) / 2
+        new_x = round(cx + random.uniform(-max_move_m, max_move_m), 4)
+        new_z = round(cz + random.uniform(-max_move_m, max_move_m), 4)
+        move_spec[obj_name] = [new_x, new_z]
+    return {"move": move_spec} if move_spec else {}
+
+
+def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001, center_override=None):
     """
     Move object's init region. Shifts center in X/Z (table plane); no Y (vertical).
 
+    - center_override: If provided, [x, z] to use as new center; else sample randomly within max_move_m.
     - init_object_range_m: Size of init region. 0 = use max_init_range_m; >0 = box.
-    - max_move_m: Max distance (m) from unperturbed center that the object can be shifted (x/z, diagonal ok).
+    - max_move_m: Max distance (m) from unperturbed center (used only when center_override is None).
     - max_init_range_m: Max extent (m) when init_object_range_m <= 0. Typically from config.
     """
     region_name = obj_region_map.get(obj_name)
@@ -289,11 +324,15 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_
     unperturbed_center_x = (coords[0] + coords[2]) / 2
     unperturbed_center_z = (coords[1] + coords[3]) / 2
 
-    # Shift center by up to max_move_m in x and z (diagonal ok)
-    delta_x = round(random.uniform(-max_move_m, max_move_m), 4)
-    delta_z = round(random.uniform(-max_move_m, max_move_m), 4)
-    new_center_x = unperturbed_center_x + delta_x
-    new_center_z = unperturbed_center_z + delta_z
+    if center_override is not None:
+        new_center_x, new_center_z = center_override[0], center_override[1]
+        print(f"[MOVE] {obj_name} center set to ({new_center_x}, {new_center_z}) from spec")
+    else:
+        delta_x = round(random.uniform(-max_move_m, max_move_m), 4)
+        delta_z = round(random.uniform(-max_move_m, max_move_m), 4)
+        new_center_x = unperturbed_center_x + delta_x
+        new_center_z = unperturbed_center_z + delta_z
+        print(f"[MOVE] {obj_name} shifted center by (dx={delta_x}, dz={delta_z}) m, init_range={init_object_range_m}m")
 
     # Init region size: 0 = use max_init_range_m; >0 = box
     if init_object_range_m <= 0:
@@ -304,7 +343,6 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_
             new_center_x - half, new_center_z - half,
             new_center_x + half, new_center_z + half,
         ]
-    print(f"[MOVE] {obj_name} shifted center by (dx={delta_x}, dz={delta_z}) m, init_range={init_object_range_m}m")
 
     new_range = " ".join(f"{x:.6g}" for x in new_coords)
     block = block[: match.start(1)] + new_range + block[match.end(1) :]
@@ -599,12 +637,12 @@ def add_distractor(bddl_text, target_workspace=None):
 # Apply perturbations
 # --------------------------
 
-def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
+def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001, perturbation_spec_dict=None):
     """Apply perturbations to kitchen scenes (deprecated, use apply_perturbations instead)."""
-    return apply_perturbations(bddl_text, perturbations, init_object_range_m, max_move_m, max_init_range_m)
+    return apply_perturbations(bddl_text, perturbations, init_object_range_m, max_move_m, max_init_range_m, perturbation_spec_dict=perturbation_spec_dict)
 
 
-def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
+def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001, perturbation_spec_dict=None):
     """
     Apply perturbations to any LIBERO scene type.
 
@@ -617,8 +655,9 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
             - "replace": list of object names to replace
             - "distractor": list of None values (count determines number of distractors)
         init_object_range_m: Size of init region (m). 0 = use max_init_range_m; >0 = box.
-        max_move_m: Max distance (m) from unperturbed center that move can shift the object.
+        max_move_m: Max distance (m) from unperturbed center (used when perturbation_spec_dict not provided for move).
         max_init_range_m: Max extent (m) when init_object_range_m <= 0. Set in config YAML.
+        perturbation_spec_dict: Optional spec dict, e.g. {"move": {obj_name: [x, z], ...}}. When provided for move, uses these centers instead of random.
 
     Returns:
         Modified BDDL text
@@ -626,6 +665,12 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
     region_blocks = find_region_blocks(bddl_text)
     obj_region_map = parse_object_region_map(bddl_text, region_blocks)
     target_workspace = extract_target_workspace(bddl_text)
+
+    if perturbation_spec_dict and "move" in perturbation_spec_dict:
+        move_spec = perturbation_spec_dict["move"]
+        for obj_name in perturbations.get("move", []):
+            if obj_name not in move_spec:
+                raise ValueError(f"perturbation_spec_dict['move'] missing center for object '{obj_name}'")
 
     print(f"[DEBUG] Detected workspace: {target_workspace}")
     print(f"[DEBUG] Object-Region mapping: {obj_region_map}")
@@ -635,7 +680,10 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
     for key, obj_list in perturbations.items():
         for obj_name in obj_list:
             if key == "move":
-                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m, max_move_m, max_init_range_m)
+                center_override = None
+                if perturbation_spec_dict and "move" in perturbation_spec_dict and obj_name in perturbation_spec_dict["move"]:
+                    center_override = perturbation_spec_dict["move"][obj_name]
+                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m, max_move_m, max_init_range_m, center_override=center_override)
                 region_blocks = find_region_blocks(bddl_text)
                 obj_region_map = parse_object_region_map(bddl_text, region_blocks)
             elif key == "reorient":
