@@ -33,17 +33,11 @@ perturbations:
   
   # For BDDL spatial perturbations
   bddl_spatial:
-    # Size of init region (m) for object placement. 0 = exact point; >0 = box.
-    # Applies to both unperturbed and perturbed runs.
-    init_object_range_m: 0
-
     # List of perturbation combinations to apply
     # Each entry is a dict with perturbation type and target objects
     perturbation_specs:
       - type: move
         objects: ["akita_black_bowl_1", "wine_bottle_1"]
-        # Max distance (m) from unperturbed center that move can shift the object (x/z, diagonal ok)
-        max_move_m: 0.05
       - type: reorient
         objects: ["akita_black_bowl_1", "wine_bottle_1"]
       - type: color
@@ -52,6 +46,8 @@ perturbations:
         count: 1
       - type: replace
         objects: ["akita_black_bowl_1"]
+      - type: control
+        objects: []
   
   # For language perturbations (if enabled)
   language:
@@ -112,7 +108,7 @@ evaluation:
     w_trajectory: 1.0
   
   # Trajectory weight matrix (8D: xyz, quat, gripper)
-  trajectory_weights: [1.0, 1.0, 1.0, 0.2, 0.2, 0.2, 0.2, 0.5]
+  trajectory_weights: [1.0, 1.0, 1.0, 0, 0, 0, 0, 0]
   
   # Output formats
   output_formats:
