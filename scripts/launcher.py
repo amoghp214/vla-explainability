@@ -215,6 +215,13 @@ class Launcher:
                 perturbation_spec_dict = generate_move_spec_dict(
                     base_bddl_text, objects, max_move_m=spec_max_move_m
                 )
+                # Example of what a perturbation_spec_dict might look like
+                # perturbation_spec_dict = {
+                #     "move": {
+                #         "akita_black_bowl_1": [0.08, -0.1]
+                #     }
+                # }
+                
             # control, reorient, color, replace, distractor: no spec dict
 
             # Apply perturbations (use generic function for all scene types)

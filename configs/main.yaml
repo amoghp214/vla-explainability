@@ -40,7 +40,8 @@ perturbations:
     # Each entry is a dict with perturbation type and target objects
     perturbation_specs:
       - type: move
-        objects: ["akita_black_bowl_1", "wine_bottle_1"]
+        objects: ["akita_black_bowl_1"]
+        max_move_m: 0.05 # This is the max move distance for the "move" perturbation type (in meters)
       # - type: reorient
       #   objects: ["akita_black_bowl_1", "wine_bottle_1"]
       # - type: color
@@ -74,7 +75,7 @@ slurm:
     cpus_per_task: 4
     mem: 16G
     gpus: 1
-    gpu_type: "V100"
+    gpu_type: "V100" #TODO: make this more flexible (e.g. allow A100, etc.)
     constraint: null  # Optional: "V100-32GB", "A100-80GB", etc.
     blacklisted_nodes: ["atl1-1-01-002-8-0"]  # Optional: List of node names to exclude from job allocation
                            # Example: ["node001", "node002"] or ["node[001-005]"]
