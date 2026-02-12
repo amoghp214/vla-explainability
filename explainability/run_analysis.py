@@ -9,6 +9,7 @@ import sys
 import json
 import numpy as np
 import torch
+import h5py
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -20,12 +21,57 @@ if str(project_root) not in sys.path:
 from utils.demo_loader import load_all_robot_states
 from explainability.vla_metrics import calculate_vla_metric, get_dtw_trajectory_distance_matrix, calculate_wasserstein_1_dist
 from explainability.vla_metrics import calculate_dtw_trajectory_difference
+from explainability.vla_metrics  import calculate_success_metric, calculate_time_metric, normalize_trajectory_difference, calculate_trajectory_difference_metric
 from explainability.data_visualization import visualize_trajectory_difference
+
+def get_success_from_hdf5_file(hdf5_file: str, trajectory_length: int) -> torch.Tensor:
+    """
+    Extract success tensor from HDF5 demo file.
+    
+    Args:
+        hdf5_file: Path to HDF5 file
+    
+    Returns:
+        torch.Tensor: Tensor of success values
+    """
+    success_results = torch.ones(len(trajectory_length))
+
+    # Detect available demos
+    with h5py.File(hdf5_file, "r") as f:
+        available_demos = [key for key in f["data"].keys() if key.startswith("demo_")]
+        available_demos.sort()
+    
+    total_demos = len(available_demos)
+
+    # Number of demos in HDF5 file but in playback.py this is determined by yaml config
+    # num_demos = None
+    
+    # # Determine how many demos to render
+    # if num_demos is None:
+    #     demos_to_render = total_demos
+    # else:
+    #     demos_to_render = min(num_demos, total_demos)
+
+    # Load HDF5 demo
+    with h5py.File(hdf5_file, "r") as f:
+        # demo_index = 0
+        for demo_index in range(total_demos):
+            demo_key = f"data/demo_{demo_index}"
+            if demo_key not in f:
+                raise ValueError(f"Demo '{demo_key}' not found in {hdf5_file}")
+
+            done = f[demo_key]["dones"][-1]
+            if not done:
+                success_results[demo_index] = 0  # Mark as failure if not done
+
+    print(f"[INFO] {hdf5_file} Success Tensor: {success_results}")
+    return success_results
 
 
 def run_analysis(
     unperturbed_file: str,
     perturbed_files: List[str],
+    controlled_file: str,
     output_file: str,
     metric_weights: Dict[str, float],
     trajectory_weights: List[float],
@@ -55,7 +101,8 @@ def run_analysis(
     
     # Compute results (simplified: assume success if trajectory completes)
     # In practice, you'd check actual task completion from environment
-    unperturbed_results = torch.ones(len(unperturbed_trajs))
+    unperturbed_results = get_success_from_hdf5_file(unperturbed_file, unperturbed_trajs)
+
     unperturbed_lengths = torch.tensor([len(t) for t in unperturbed_trajs]).float()
     
     results = {}
@@ -67,7 +114,12 @@ def run_analysis(
     output_path = Path(output_file)
     viz_dir = output_path.parent / "visualizations"
     viz_dir.mkdir(exist_ok=True)
-    
+
+    # Distance metric for unperturbed vs unperturbed control (for normalization)
+    print(f"[INFO] Loading controlled trajectories from {controlled_file}")
+    controlled_trajs = load_all_robot_states(controlled_file)
+
+
     # Analyze each perturbed file
     for pert_file in perturbed_files:
         pert_id = Path(pert_file).stem
@@ -75,7 +127,7 @@ def run_analysis(
         
         try:
             perturbed_trajs = load_all_robot_states(pert_file)
-            perturbed_results = torch.ones(len(perturbed_trajs))
+            perturbed_results = get_success_from_hdf5_file(pert_file, perturbed_trajs)
             perturbed_lengths = torch.tensor([len(t) for t in perturbed_trajs]).float()
             
             # Calculate metric
@@ -86,14 +138,36 @@ def run_analysis(
                 perturbed_episode_lengths=perturbed_lengths,
                 unperturbed_trajectories=unperturbed_trajs,
                 perturbed_trajectories=perturbed_trajs,
+                controlled_trajectories=controlled_trajs,
                 w_result=metric_weights['w_result'],
                 w_time=metric_weights['w_time'],
                 w_trajectory=metric_weights['w_trajectory'],
                 W=traj_weights
             )
+
+            # Calculate success rate
+            success_rate = calculate_success_metric(
+                unperturbed_episode_results=unperturbed_results,
+                perturbed_episode_results=perturbed_results
+            )
+
+            # Calculate time metric
+            time_metric = calculate_time_metric(
+                unperturbed_episode_lengths=unperturbed_lengths,
+                perturbed_episode_lengths=perturbed_lengths
+            )
+
+            # Calculate trajectory difference metric
+            trajectory_metric = normalize_trajectory_difference(
+                unperturbed_trajectories=unperturbed_trajs,
+                perturbed_trajectories=perturbed_trajs,
+                controlled_trajectories=controlled_trajs,
+                W=traj_weights
+            )
             
             # Generate trajectory visualizations
             # Find best matching pair using Wasserstein distance
+            # TODO: Is this incomplete? Are we using first pair instead of best
             if len(unperturbed_trajs) > 0 and len(perturbed_trajs) > 0:
                 # Calculate distance matrix to find best match
                 distance_matrix = get_dtw_trajectory_distance_matrix(
@@ -117,14 +191,13 @@ def run_analysis(
                     if warp_path is not None and len(warp_path) > 0:
                         # Create lines connecting matched points in warp path
                         lines = []
-                        for i in range(len(warp_path) - 1):
+                        for i in range(len(warp_path)):
                             idx1, idx2 = warp_path[i]
-                            next_idx1, next_idx2 = warp_path[i + 1]
                             # Create line segment connecting consecutive matched points
                             # Line from unperturbed point to next matched perturbed point
                             line = np.array([
                                 unpert_traj[idx1, :3],  # Start: XYZ from unperturbed
-                                pert_traj[next_idx2, :3]  # End: XYZ from perturbed
+                                pert_traj[idx2, :3]  # End: XYZ from perturbed
                             ])
                             lines.append(line)
                         if lines:
@@ -143,11 +216,18 @@ def run_analysis(
                     print(f"  Warning: Could not generate visualization: {viz_e}")
             
             results[pert_id] = {
+                'success_rate': float(success_rate),
+                'time_metric': float(time_metric),
+                'trajectory_metric': float(trajectory_metric),
                 'metric': float(metric),
                 'num_demos': len(perturbed_trajs),
                 'avg_length': float(torch.mean(perturbed_lengths)),
                 'visualization': str(viz_dir / f"{pert_id}_trajectory_diff.html")
             }
+
+            print(f"  Success Rate: {success_rate:.4f}")
+            print(f"  Time Metric: {time_metric:.4f}")
+            print(f"  Trajectory Metric: {trajectory_metric:.4f}")
             print(f"  Metric: {metric:.4f}")
         except Exception as e:
             print(f"  Error analyzing {pert_id}: {e}")
@@ -184,6 +264,12 @@ def main():
         nargs="+",
         required=True,
         help="Paths to perturbed HDF5 files"
+    )
+    parser.add_argument(
+        "--controlled",
+        type=str,
+        required=True,
+        help="Path to unperturbed control HDF5 file"
     )
     parser.add_argument(
         "--output",
@@ -240,6 +326,7 @@ def main():
     run_analysis(
         unperturbed_file=args.unperturbed,
         perturbed_files=args.perturbed,
+        controlled_file=args.controlled,
         output_file=args.output,
         metric_weights=metric_weights,
         trajectory_weights=trajectory_weights,

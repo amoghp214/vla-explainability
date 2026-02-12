@@ -18,11 +18,13 @@ def calculate_vla_metric(
         perturbed_episode_lengths,
         unperturbed_trajectories,
         perturbed_trajectories,
+        controlled_trajectories,
         w_result=1,
         w_time=1,
         w_trajectory=1,
         W=None):
     """
+    Smaller metric values indicate that the perturbed episode is more similar to the unperturbed episode.
     Computes the VLA metric given the results, lengths, and trajectories of the unperturbed and perturbed episodes.
     This metric is a weighted sum of the success metric, time metric, and trajectory difference metric.
 
@@ -48,7 +50,7 @@ def calculate_vla_metric(
     metric_weights = metric_weights / np.linalg.norm(metric_weights)
     success_metric = calculate_success_metric(unperturbed_episode_results, perturbed_episode_results)
     time_metric = calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths)
-    trajectory_metric = calculate_trajectory_difference_metric(unperturbed_trajectories, perturbed_trajectories, W)
+    trajectory_metric = normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W)
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
     return vla_metric
@@ -87,8 +89,37 @@ def calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths
     assert torch.all(perturbed_episode_lengths > 0), "The length of the perturbed episode trials must be greater than 0."
     average_unperturbed_episode_length = torch.mean(unperturbed_episode_lengths.float())
     average_perturbed_episode_length = torch.mean(perturbed_episode_lengths.float())
-    episode_length_increase = average_unperturbed_episode_length / average_perturbed_episode_length
+
+    ## Q: should numerator & denominator be swapped? --> penalize longer episodes more
+    ## Also if peturbation is such that episode length is 0 then this metric blows up
+    # episode_length_increase = average_unperturbed_episode_length / average_perturbed_episode_length
+    episode_length_increase = np.abs(average_perturbed_episode_length - average_unperturbed_episode_length) / average_unperturbed_episode_length
     return episode_length_increase
+
+def normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W=None):
+    """
+    Computes the log Wasserstein distance between the set of n trials of the unperturbed trajectory and
+    the set of n trials of the perturbed trajectory.
+
+    Args:
+        unperturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the unperturbed episodes.
+        perturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the perturbed episodes.
+        W (np.array): A diagonal matrix or 1d array that represents the weights of the different trajectory dimensions (8D)
+
+    Returns:
+        float: the trajectory difference (-inf, inf) between a set of trials for unperturbed and perturbed episodes.
+    """
+    perturbed_unperturbed_diff = calculate_trajectory_difference_metric(unperturbed_trajectories, 
+                                                                        perturbed_trajectories, W)
+    unperturbed_trajectories_diff = calculate_trajectory_difference_metric(
+                                    unperturbed_trajectories,
+                                    controlled_trajectories,
+                                    W)
+    
+    print(f"Perturbed-Unperturbed Trajectory Difference: {perturbed_unperturbed_diff}")
+    print(f"Unperturbed Trajectory Difference: {unperturbed_trajectories_diff}")
+
+    return (perturbed_unperturbed_diff - unperturbed_trajectories_diff) / (perturbed_unperturbed_diff + unperturbed_trajectories_diff)
 
 def calculate_trajectory_difference_metric(unperturbed_trajectories, perturbed_trajectories, W=None):
     """
@@ -121,13 +152,19 @@ def calculate_trajectory_difference_metric(unperturbed_trajectories, perturbed_t
         assert W.shape == (8, 8), f"The W matrix should have the same number of elements as the DoF for the trajectories, ie shape: (8, 8), got {W.shape}."
     else:
         assert False, f"W should have ndims as 1 or 2, got {W.ndim}."
+        
     n = len(unperturbed_trajectories)
 
     trajectory_distance_matrix = get_dtw_trajectory_distance_matrix(unperturbed_trajectories, perturbed_trajectories, W)
+    print(f"Trajectory distance matrix: {trajectory_distance_matrix}")
+    print(f"Mean Trajectory distance matrix: {np.mean(trajectory_distance_matrix)}")
+    print(f"Median Trajectory distance matrix: {np.median(trajectory_distance_matrix)}")
     trajectory_wasserstein_distance = calculate_wasserstein_1_dist(trajectory_distance_matrix, n)
-    trajectory_difference = np.log(trajectory_wasserstein_distance + 1e-16)
+    print(f"Trajectory Wasserstein distance: {trajectory_wasserstein_distance}")
+    
+    # trajectory_difference = np.log(trajectory_wasserstein_distance + 1e-16)
 
-    return trajectory_difference
+    return trajectory_wasserstein_distance
 
 def get_dtw_trajectory_distance_matrix(unperturbed_trajectories, perturbed_trajectories, W=None):
     """
