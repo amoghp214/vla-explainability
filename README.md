@@ -1,172 +1,286 @@
-<div align="center">
-<img src="https://github.com/Lifelong-Robot-Learning/LIBERO/blob/master/images/libero_logo.png" width="360">
+# VLA Explainability Pipeline
 
-
-<p align="center">
-<a href="https://github.com/Lifelong-Robot-Learning/LIBERO/actions">
-<img alt="Tests Passing" src="https://github.com/anuraghazra/github-readme-stats/workflows/Test/badge.svg" />
-</a>
-<a href="https://github.com/Lifelong-Robot-Learning/LIBERO/graphs/contributors">
-<img alt="GitHub Contributors" src="https://img.shields.io/github/contributors/Lifelong-Robot-Learning/LIBERO" />
-</a>
-<a href="https://github.com/Lifelong-Robot-Learning/LIBERO/issues">
-<img alt="Issues" src="https://img.shields.io/github/issues/Lifelong-Robot-Learning/LIBERO?color=0088ff" />
-
-## **Benchmarking Knowledge Transfer for Lifelong Robot Learning**
-
-Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, Peter Stone
-
-[[Website]](https://libero-project.github.io)
-[[Paper]](https://arxiv.org/pdf/2306.03310.pdf)
-[[Docs]](https://lifelong-robot-learning.github.io/LIBERO/)
-______________________________________________________________________
-![pull_figure](https://github.com/Lifelong-Robot-Learning/LIBERO/blob/master/images//fig1.png)
-</div>
-
-**LIBERO** is designed for studying knowledge transfer in multitask and lifelong robot learning problems. Successfully resolving these problems require both declarative knowledge about objects/spatial relationships and procedural knowledge about motion/behaviors. **LIBERO** provides:
-- a procedural generation pipeline that could in principle generate an infinite number of manipulation tasks.
-- 130 tasks grouped into four task suites: **LIBERO-Spatial**, **LIBERO-Object**, **LIBERO-Goal**, and **LIBERO-100**. The first three task suites have controlled distribution shifts, meaning that they require the transfer of a specific type of knowledge. In contrast, **LIBERO-100** consists of 100 manipulation tasks that require the transfer of entangled knowledge. **LIBERO-100** is further splitted into **LIBERO-90** for pretraining a policy and **LIBERO-10** for testing the agent's downstream lifelong learning performance.
-- five research topics.
-- three visuomotor policy network architectures.
-- three lifelong learning algorithms with the sequential finetuning and multitask learning baselines.
+Pipeline for generating perturbed LIBERO datasets and recording OpenVLA demonstrations for VLA explainability research. Supports batch runs on HPC (e.g. PACE-ICE with SLURM) and local step-by-step runs.
 
 ---
 
+## Contents
 
-# Contents
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Perturbation types and spec dicts](#perturbation-types-and-spec-dicts)
+- [Local runs (no SLURM)](#local-runs-no-slurm)
+- [Directory structure](#directory-structure)
+- [Troubleshooting](#troubleshooting)
+- [Customization](#customization)
+- [Citation and license](#citation-and-license)
 
-- [Installation](#Installation)
-- [Datasets](#Dataset)
-- [Getting Started](#Getting-Started)
-  - [Task](#Task)
-  - [Training](#Training)
-  - [Evaluation](#Evaluation)
-- [Citation](#Citation)
-- [License](#License)
+---
 
+## Overview
 
-# Installtion
-Please run the following commands in the given order to install the dependency for **LIBERO**.
-```
-conda create -n libero python=3.8.13
-conda activate libero
-git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
-cd LIBERO
-pip install -r requirements.txt
-pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
-```
+The system:
 
-Then install the `libero` package:
-```
-pip install -e .
-```
+1. **Generates perturbations** — Reads a base BDDL task, applies spatial and/or language perturbations, writes BDDL files and record configs. Init regions use a small fixed extent (`max_init_range_m`) so the env barely changes across runs and MuJoCo gets valid geom sizes.
+2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
+3. **Post-processes** — Renders videos from HDF5 recordings and runs evaluation (trajectory comparison, metrics).
 
-# Datasets
-We provide high-quality human teleoperation demonstrations for the four task suites in **LIBERO**. To download the demonstration dataset, run:
-```python
-python benchmark_scripts/download_libero_datasets.py
-```
-By default, the dataset will be stored under the ```LIBERO``` folder and all four datasets will be downloaded. To download a specific dataset, use
-```python
-python benchmark_scripts/download_libero_datasets.py --datasets DATASET
-```
-where ```DATASET``` is chosen from `[libero_spatial, libero_object, libero_100, libero_goal`.
+You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally.
 
-**NEW!!!**
+---
 
-Alternatively, you can download the dataset from HuggingFace by using:
-```python
-python benchmark_scripts/download_libero_datasets.py --use-huggingface
+## Quick Start
+
+### 1. Configure
+
+Edit `configs/main.yaml`:
+
+- **Base task:** `base_bddl_file`, `base_prompt`, `task_suite_name`
+- **Paths:** `cache_dir` (HuggingFace), `run_base_dir` (optional; default `$SCRATCH/vla-explainability-runs`)
+- **SLURM:** `slurm.job_params` (account, partition, time, gpus), `slurm.conda_env`, `slurm.module_load`
+- **Perturbations:** `perturbations.types`, `perturbations.bddl_spatial.perturbation_specs` (see below)
+
+### 2. Run full pipeline
+
+```bash
+python scripts/launcher.py --config configs/main.yaml
 ```
 
-This option can also be combined with the specific dataset selection:
-```python
-python benchmark_scripts/download_libero_datasets.py --datasets DATASET --use-huggingface
+This creates a timestamped run directory, generates all BDDL/configs, submits SLURM jobs, then runs video rendering and evaluation when jobs finish.
+
+### 3. Generate only (no jobs)
+
+To only write BDDL and configs to a local folder:
+
+```bash
+python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
 ```
 
-The datasets hosted on HuggingFace are available at [here](https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets).
+Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
 
+---
 
-# Getting Started
+## Configuration
 
-For a detailed walk-through, please either refer to the documentation or the notebook examples provided under the `notebooks` folder. In the following, we provide example scripts for retrieving a task, training and evaluation.
+### Base task and recording
 
-## Task
+| Key | Description |
+|-----|-------------|
+| `model` | Model type (e.g. `openvla`) |
+| `task_suite_name` | LIBERO suite: `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, etc. |
+| `device` | e.g. `cuda:0` |
+| `cache_dir` | HuggingFace cache for models |
+| `base_bddl_file` | Path to base BDDL (relative to project root or absolute) |
+| `base_prompt` | Task instruction text |
+| `action_scale`, `num_demos`, `noise_std` | Recording options |
 
-The following is a minimal example of retrieving a specific task from a specific task suite.
-```python
-from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
+### Perturbations
 
+- **`perturbations.types`** — List: `bddl_spatial`, `language` (or both).
+- **`perturbations.bddl_spatial`**:
+  - **`max_init_range_m`** — Extent (m) used for every init region when init is “exact,” so the env is nearly deterministic and MuJoCo gets positive geom size. Default `0.001` (1 mm).
+  - **`max_move_m`** — Default max distance (m) for “move” perturbations (can be overridden per spec).
+  - **`perturbation_specs`** — List of entries; each entry produces one run (one BDDL + one record config).
 
-benchmark_dict = benchmark.get_benchmark_dict()
-task_suite_name = "libero_10" # can also choose libero_spatial, libero_object, etc.
-task_suite = benchmark_dict[task_suite_name]()
+### Perturbation spec entries (YAML)
 
-# retrieve a specific task
-task_id = 0
-task = task_suite.get_task(task_id)
-task_name = task.name
-task_description = task.language
-task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
-print(f"[info] retrieving task {task_id} from suite {task_suite_name}, the " + \
-      f"language instruction is {task_description}, and the bddl file is {task_bddl_file}")
+Each entry in `perturbation_specs` has:
 
-# step over the environment
-env_args = {
-    "bddl_file_name": task_bddl_file,
-    "camera_heights": 128,
-    "camera_widths": 128
-}
-env = OffScreenRenderEnv(**env_args)
-env.seed(0)
-env.reset()
-init_states = task_suite.get_task_init_states(task_id) # for benchmarking purpose, we fix the a set of initial states
-init_state_id = 0
-env.set_init_state(init_states[init_state_id])
+- **`type`** — One of: `move`, `reorient`, `color`, `replace`, `distractor`, `control`.
+- **`objects`** — Object names (e.g. `["akita_black_bowl_1", "wine_bottle_1"]`). Omit for `distractor` and `control`.
+- **`count`** — For `distractor` only (number of distractors).
+- **`max_move_m`** — Optional; overrides the default for `move` only.
 
-dummy_action = [0.] * 7
-for step in range(10):
-    obs, reward, done, info = env.step(dummy_action)
-env.close()
-```
-Currently, we only support sparse reward function (i.e., the agent receives `+1` when the task is finished). As sparse-reward RL is extremely hard to learn, currently we mainly focus on lifelong imitation learning.
+Examples:
 
-## Training
-To start a lifelong learning experiment, please choose:
-- `BENCHMARK` from `[LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]`
-- `POLICY` from `[bc_rnn_policy, bc_transformer_policy, bc_vilt_policy]`
-- `ALGO` from `[base, er, ewc, packnet, multitask]`
-
-then run the following:
-
-```shell
-export CUDA_VISIBLE_DEVICES=GPU_ID && \
-export MUJOCO_EGL_DEVICE_ID=GPU_ID && \
-python libero/lifelong/main.py seed=SEED \
-                               benchmark_name=BENCHMARK \
-                               policy=POLICY \
-                               lifelong=ALGO
-```
-Please see the documentation for the details of reproducing the study results.
-
-## Evaluation
-
-By default the policies will be evaluated on the fly during training. If you have limited computing resource of GPUs, we offer an evaluation script for you to evaluate models separately.
-
-```shell
-python libero/lifelong/evaluate.py --benchmark BENCHMARK_NAME \
-                                   --task_id TASK_ID \ 
-                                   --algo ALGO_NAME \
-                                   --policy POLICY_NAME \
-                                   --seed SEED \
-                                   --ep EPOCH \
-                                   --load_task LOAD_TASK \
-                                   --device_id CUDA_ID
+```yaml
+perturbation_specs:
+  - type: move
+    objects: ["akita_black_bowl_1", "wine_bottle_1"]
+    max_move_m: 0.05
+  - type: reorient
+    objects: ["wine_bottle_1"]
+  - type: color
+    objects: ["akita_black_bowl_1"]
+  - type: distractor
+    count: 1
+  - type: control
+    objects: []
 ```
 
-# Citation
-If you find **LIBERO** to be useful in your own research, please consider citing our paper:
+### SLURM
+
+- **`slurm.max_concurrent_jobs`** — How many record jobs run at once.
+- **`slurm.job_params`** — `partition`, `account`, `time`, `nodes`, `gpus`, `gpu_type`, `mem`, `constraint`, `blacklisted_nodes`, etc.
+- **`slurm.conda_env`** — Conda env path or name used in job scripts.
+- **`slurm.module_load`** — List of modules to load (e.g. `anaconda3/2023.03`, `cuda/12.6.1`).
+- **`slurm.poll_interval`** — Seconds between job status checks.
+
+### Evaluation
+
+- **`evaluation.enabled`** — Whether to run trajectory analysis after jobs complete.
+- **`evaluation.metric_weights`**, **`evaluation.trajectory_weights`**, **`evaluation.output_formats`** — Control metrics and outputs (e.g. JSON, hdf5).
+
+---
+
+## Perturbation types and spec dicts
+
+### Types
+
+- **move** — Object init region is moved. New center is chosen in code (see below).
+- **reorient** — Object yaw is perturbed by a random angle.
+- **color** — Object color is changed to a random supported color.
+- **replace** — Object is replaced with another type in the workspace.
+- **distractor** — Extra distractor object(s) added (count from `count`).
+- **control** — No BDDL change; same as base. Used for baseline comparison.
+
+### Spec dicts (in code, not in YAML)
+
+Perturbation **spec dicts** are generated in code and passed into the perturbation logic. They are **not** defined in `main.yaml`.
+
+- **Shape (for move):**  
+  `{"move": {"object_name": [center_x, center_z], ...}}`  
+  Coordinates are in the same table-plane frame as BDDL `:ranges` (x, z).
+
+- **Who generates them:**  
+  For each **move** entry in `perturbation_specs`, the launcher calls `generate_move_spec_dict(base_bddl_text, objects, max_move_m)`. That function:
+  - Reads unperturbed center (x, z) for each object from the BDDL.
+  - Samples a new center per object: `center + random.uniform(-max_move_m, max_move_m)` in x and z.
+  - Returns one spec dict per perturbation file.
+
+- **Control and other types:**  
+  No spec dict is used (control leaves BDDL unchanged; reorient/color/replace/distractor use their existing random behavior).
+
+So: **one move entry → one call to `generate_move_spec_dict` → one spec dict → one BDDL file** with deterministic (but randomly chosen) move centers. To use custom positions instead of random, you can later replace or extend the generator (e.g. in `libero/libero/utils/generate_perturbation_bddl.py`) without changing the config.
+
+---
+
+## Local runs (no SLURM)
+
+To try one perturbation locally:
+
+**1. Generate only**
+
+```bash
+python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
+```
+
+This creates `./local_run/` with:
+
+- `bddl_files/` — `unperturbed.bddl`, `perturbed_0.bddl`, ...
+- `configs/` — `unperturbed.yaml`, `perturbed_0.yaml`, ...
+- `perturbation_manifest.json`
+
+**2. (Optional) Edit a config**  
+Adjust `./local_run/configs/<id>.yaml` if needed (e.g. `device`, `cache_dir`, `num_demos`).
+
+**3. Record one run**
+
+```bash
+python scripts/record.py --config ./local_run/configs/unperturbed.yaml
+# or
+python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
+```
+
+Output: `./local_run/results/<id>.hdf5`.
+
+**4. (Optional) Render video**
+
+```bash
+python scripts/playback.py --config ./local_run/configs/perturbed_0.yaml
+```
+
+---
+
+## Directory structure
+
+After a run (full or generate-only), the run directory looks like:
+
+```
+run_dir/
+├── main_config.yaml           # Copy of main config
+├── perturbation_manifest.json  # List of perturbations and descriptions
+├── job_summary.json            # (After jobs) completed/failed counts
+├── analysis_results.json       # (After evaluation) metrics
+├── bddl_files/
+│   ├── unperturbed.bddl
+│   ├── perturbed_0.bddl
+│   └── ...
+├── configs/
+│   ├── unperturbed.yaml
+│   ├── perturbed_0.yaml
+│   └── ...
+├── results/
+│   ├── unperturbed.hdf5
+│   ├── perturbed_0.hdf5
+│   ├── trajectories.json
+│   └── videos/
+├── logs/                       # SLURM logs (when using launcher without --generate-only)
+└── jobs/                       # SLURM scripts
+```
+
+---
+
+## Troubleshooting
+
+### Record script exits with "Aborted"
+
+Usually the process is killed (e.g. OOM). Run recording **inside a GPU job** with enough memory, not on a login node:
+
+```bash
+srun --gres=gpu:1 --mem=32G --time=2:00:00 --pty bash
+# then: conda activate your_env; python scripts/record.py --config ...
+```
+
+Set `num_demos: 1` in the config when testing. Ensure `device` and `cache_dir` in the generated config match your machine.
+
+### MuJoCo error: "size 0 must be positive in geom"
+
+Init regions had zero extent. The pipeline applies `fix_init_ranges` with `max_init_range_m` so every region has a small positive extent. Regenerate BDDLs with the launcher (e.g. `--generate-only --run-dir ./local_run`) so the fixed BDDLs are used.
+
+### Python codec / init_fs_encoding error on PACE-ICE
+
+Often due to a broken or moved conda env. Set locale and use a clean env:
+
+```bash
+export LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8
+```
+
+Recreate the env on the cluster (do not copy from another machine). Use the project’s `environment.yml` or `requirements-env-pip.txt` and `pip install -e .` for the libero package.
+
+### Jobs not starting
+
+Check SLURM `account`, `partition`, and `conda_env` in `configs/main.yaml`. Inspect `logs/` and `squeue`.
+
+### Perturbation generation fails
+
+Confirm `base_bddl_file` exists and object names in `perturbation_specs` match the BDDL (e.g. `akita_black_bowl_1`). Check console for validation errors.
+
+---
+
+## Customization
+
+### Adding or changing perturbation logic
+
+- **Spatial:** `libero/libero/utils/generate_perturbation_bddl.py` — `apply_perturbations`, `move_object`, `reorient_object`, `change_color`, `replace_object`, `add_distractor`, and `generate_move_spec_dict`.
+- **Language:** `explainability/perturbations/language/generate_perturbations.py`.
+- **Launcher:** `scripts/launcher.py` — `_generate_bddl_spatial_perturbations`, `_generate_language_perturbations`.
+
+### Custom move positions
+
+Replace or extend `generate_move_spec_dict` in `generate_perturbation_bddl.py` to return `{"move": {obj: [x, z], ...}}` from your own source (e.g. file, grid). The launcher and `apply_perturbations(..., perturbation_spec_dict=...)` already consume that shape.
+
+### Evaluation metrics
+
+Adjust `scripts/launcher.py` `_run_analysis` and the evaluation config (e.g. `evaluation.metric_weights`, `evaluation.trajectory_weights`).
+
+---
+
+## Citation and license
+
+**LIBERO** (benchmark and env):
 
 ```bibtex
 @article{liu2023libero,
@@ -177,8 +291,5 @@ If you find **LIBERO** to be useful in your own research, please consider citing
 }
 ```
 
-# License
-| Component        | License                                                                                                                             |
-|------------------|-------------------------------------------------------------------------------------------------------------------------------------|
-| Codebase         | [MIT License](LICENSE)                                                                                                                      |
-| Datasets         | [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/legalcode)                 |
+- **Codebase:** [MIT License](LICENSE)
+- **LIBERO datasets:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/legalcode)
