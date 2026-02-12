@@ -199,6 +199,11 @@ RANGES_PATTERN = re.compile(
 )
 
 
+# MuJoCo requires geom size > 0. LIBERO uses (ranges[2]-ranges[0])/2 and (ranges[3]-ranges[1])/2
+# as box half-extents, so zero-extent ranges cause "size 0 must be positive" errors.
+MIN_INIT_RANGE_M = 1e-3  # 1 mm minimum extent so zone_size is always positive
+
+
 def _collapse_ranges_to_center(coords):
     """Collapse rectangle (x_min, y_min, x_max, y_max) to center point for exact init."""
     x_min, y_min, x_max, y_max = coords
@@ -207,13 +212,27 @@ def _collapse_ranges_to_center(coords):
     return [center_x, center_y, center_x, center_y]
 
 
+def _ensure_positive_extent(coords, min_extent=MIN_INIT_RANGE_M):
+    """Ensure (x_min, z_min, x_max, z_max) has at least min_extent in each dimension."""
+    x_min, z_min, x_max, z_max = coords
+    if (x_max - x_min) < min_extent:
+        mid = (x_min + x_max) / 2
+        half = min_extent / 2
+        x_min, x_max = mid - half, mid + half
+    if (z_max - z_min) < min_extent:
+        mid = (z_min + z_max) / 2
+        half = min_extent / 2
+        z_min, z_max = mid - half, mid + half
+    return [x_min, z_min, x_max, z_max]
+
+
 def fix_init_ranges(bddl_text, init_object_range_m=0.0):
     """
     Fix region ranges for deterministic initialization.
 
     When init_object_range_m == 0: collapse all region ranges to their center point
-    (exact initialization). When init_object_range_m > 0: collapse to center and
-    optionally expand by tolerance (currently same as 0 for deterministic base).
+    (exact initialization), then enforce a minimum positive extent so MuJoCo
+    never gets size 0. When init_object_range_m > 0: collapse to center and expand.
 
     Args:
         bddl_text: BDDL file content
@@ -232,6 +251,7 @@ def fix_init_ranges(bddl_text, init_object_range_m=0.0):
             coords = list(map(float, match.group(1).split()))
             if init_object_range_m <= 0:
                 new_coords = _collapse_ranges_to_center(coords)
+                new_coords = _ensure_positive_extent(new_coords)
             else:
                 new_coords = _collapse_ranges_to_center(coords)
                 half = init_object_range_m / 2
@@ -281,9 +301,9 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_
     new_center_x = unperturbed_center_x + delta_x
     new_center_z = unperturbed_center_z + delta_z
 
-    # Init region size: 0 = point; >0 = box
+    # Init region size: 0 = point; >0 = box (point regions get min extent so MuJoCo size > 0)
     if init_object_range_m <= 0:
-        new_coords = [new_center_x, new_center_z, new_center_x, new_center_z]
+        new_coords = _ensure_positive_extent([new_center_x, new_center_z, new_center_x, new_center_z])
     else:
         half = init_object_range_m / 2
         new_coords = [
