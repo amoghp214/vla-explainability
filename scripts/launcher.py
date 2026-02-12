@@ -9,7 +9,12 @@ This script:
 4. Runs evaluation scripts after all jobs complete
 
 Usage:
+    # Full pipeline (generate + SLURM jobs + videos + evaluation):
     python scripts/launcher.py --config configs/main.yaml
+
+    # Local tryout: only generate perturbations, then record one config by hand:
+    python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
+    python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
 """
 
 import os
@@ -47,8 +52,14 @@ else:
 class Launcher:
     """Main launcher class for managing the pipeline."""
     
-    def __init__(self, config_path: str):
-        """Initialize launcher with config file."""
+    def __init__(self, config_path: str, run_dir_override: Optional[str] = None):
+        """Initialize launcher with config file.
+
+        Args:
+            config_path: Path to main.yaml.
+            run_dir_override: If set, use this directory as run_dir (e.g. ./local_run).
+                             Otherwise use run_base_dir from config + timestamped folder.
+        """
         self.config_path = Path(config_path)
         with open(self.config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -58,16 +69,17 @@ class Launcher:
         self.scratch_dir = Path(scratch)
         
         # Set up run directory
-        run_base = self.config.get('run_base_dir')
-        if run_base is None:
-            run_base = self.scratch_dir / 'vla-explainability-runs'
+        if run_dir_override is not None:
+            self.run_dir = Path(run_dir_override)
         else:
-            run_base = Path(run_base)
-        
-        # Create timestamped run directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        task_name = self.config.get('task_suite_name', 'libero')
-        self.run_dir = run_base / f"{task_name}_{timestamp}"
+            run_base = self.config.get('run_base_dir')
+            if run_base is None:
+                run_base = self.scratch_dir / 'vla-explainability-runs'
+            else:
+                run_base = Path(run_base)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            task_name = self.config.get('task_suite_name', 'libero')
+            self.run_dir = run_base / f"{task_name}_{timestamp}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"[INFO] Run directory: {self.run_dir}")
@@ -679,8 +691,13 @@ echo "Job completed: {perturbation_id}"
         # Run analysis
         subprocess.run(cmd, check=True)
     
-    def run(self):
-        """Run the complete pipeline."""
+    def run(self, generate_only: bool = False):
+        """Run the complete pipeline (or only perturbation generation).
+
+        Args:
+            generate_only: If True, only generate perturbations and print instructions
+                           for running record.py locally; do not submit SLURM jobs.
+        """
         print("=" * 80)
         print("VLA Explainability Pipeline Launcher")
         print("=" * 80)
@@ -688,6 +705,10 @@ echo "Job completed: {perturbation_id}"
         
         # Step 1: Generate perturbations
         self.generate_perturbations()
+        
+        if generate_only:
+            self._print_local_recording_instructions()
+            return
         
         # Step 2: Dispatch jobs
         self.dispatch_jobs()
@@ -703,6 +724,24 @@ echo "Job completed: {perturbation_id}"
         print(f"Results available in: {self.run_dir}")
         print("=" * 80)
 
+    def _print_local_recording_instructions(self):
+        """Print how to record one perturbation locally."""
+        print("\n" + "=" * 80)
+        print("Generate-only complete. To record one perturbation locally:")
+        print("=" * 80)
+        print(f"\n1. Run record for a single config (e.g. unperturbed or perturbed_0):")
+        print(f"   python scripts/record.py --config {self.config_dir / 'unperturbed.yaml'}")
+        print(f"\n   Or for a specific perturbation:")
+        for info in self.perturbation_info:
+            if info["id"] != "unperturbed":
+                print(f"   python scripts/record.py --config {info['config_file']}")
+                break
+        print(f"\n2. From project root, ensure device/cache_dir in the generated config")
+        print(f"   (in {self.config_dir}) match your machine, or override in the YAML.")
+        print(f"\n3. After recording, render video (optional):")
+        print(f"   python scripts/playback.py --config <same_config.yaml>")
+        print("=" * 80)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -714,11 +753,22 @@ def main():
         required=True,
         help="Path to main.yaml configuration file"
     )
+    parser.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local tryouts."
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="Override run directory (e.g. ./local_run). Useful with --generate-only for local step-by-step runs."
+    )
     
     args = parser.parse_args()
     
-    launcher = Launcher(args.config)
-    launcher.run()
+    launcher = Launcher(args.config, run_dir_override=args.run_dir)
+    launcher.run(generate_only=args.generate_only)
 
 
 if __name__ == "__main__":
