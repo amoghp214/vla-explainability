@@ -42,6 +42,7 @@ if perturbation_utils_path.exists():
     pert_utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pert_utils)
     read_bddl = pert_utils.read_bddl
+    fix_init_ranges = getattr(pert_utils, 'fix_init_ranges', lambda t, **kw: t)
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
     apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
     validate_bddl = pert_utils.validate_bddl
@@ -123,7 +124,14 @@ class Launcher:
         # Read base BDDL
         base_bddl_text = read_bddl(str(base_bddl))
         
-        # Copy base BDDL (unperturbed)
+        # Apply init range to all regions (max_init_range_m from config when init is "exact"; MuJoCo needs size > 0)
+        pert_config = self.config.get('perturbations', {})
+        bddl_spatial = pert_config.get('bddl_spatial', {})
+        init_object_range_m = self.config.get('init_object_range_m', bddl_spatial.get('init_object_range_m', 0.0))
+        max_init_range_m = bddl_spatial.get('max_init_range_m', 0.001)
+        base_bddl_text = fix_init_ranges(base_bddl_text, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m)
+        
+        # Copy base BDDL (unperturbed) with all regions having minimal extent
         unperturbed_bddl_path = self.bddl_dir / "unperturbed.bddl"
         with open(unperturbed_bddl_path, 'w') as f:
             f.write(base_bddl_text)
@@ -155,7 +163,7 @@ class Launcher:
         
         if 'bddl_spatial' in pert_types:
             pert_id = self._generate_bddl_spatial_perturbations(
-                base_bddl_text, pert_id
+                base_bddl_text, pert_id, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m
             )
         
         if 'language' in pert_types:
@@ -170,18 +178,20 @@ class Launcher:
         with open(manifest_path, 'w') as f:
             json.dump(self.perturbation_info, f, indent=2)
     
-    def _generate_bddl_spatial_perturbations(self, base_bddl_text: str, start_id: int) -> int:
+    def _generate_bddl_spatial_perturbations(self, base_bddl_text: str, start_id: int, init_object_range_m: float = 0.0, max_init_range_m: float = 0.001) -> int:
         """Generate BDDL spatial perturbations."""
         pert_config = self.config['perturbations']['bddl_spatial']
         specs = pert_config.get('perturbation_specs', [])
+        max_move_m = pert_config.get('max_move_m', 0.05)
         
         pert_id = start_id
         pert_id_copy = pert_id
         
         for spec in specs:
             pert_type = spec['type']
+            spec_max_move_m = spec.get('max_move_m', max_move_m)
             
-            # Build perturbation dict for apply_perturbations_kitchen
+            # Build perturbation dict for apply_perturbations
             perturbations = {}
             
             if pert_type == 'distractor':
@@ -200,8 +210,11 @@ class Launcher:
             # Apply perturbations (use generic function for all scene types)
             try:
                 perturbed_bddl = apply_perturbations(
-                    copy.deepcopy(base_bddl_text), 
-                    perturbations
+                    copy.deepcopy(base_bddl_text),
+                    perturbations,
+                    init_object_range_m=init_object_range_m,
+                    max_move_m=spec_max_move_m,
+                    max_init_range_m=max_init_range_m,
                 )
                 
                 # Validate

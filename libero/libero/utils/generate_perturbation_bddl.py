@@ -200,8 +200,7 @@ RANGES_PATTERN = re.compile(
 
 
 # MuJoCo requires geom size > 0. LIBERO uses (ranges[2]-ranges[0])/2 and (ranges[3]-ranges[1])/2
-# as box half-extents, so zero-extent ranges cause "size 0 must be positive" errors.
-MIN_INIT_RANGE_M = 1e-3  # 1 mm minimum extent so zone_size is always positive
+# as box half-extents. When init_object_range_m <= 0 we use max_init_range_m from config (tiny extent).
 
 
 def _collapse_ranges_to_center(coords):
@@ -212,31 +211,28 @@ def _collapse_ranges_to_center(coords):
     return [center_x, center_y, center_x, center_y]
 
 
-def _ensure_positive_extent(coords, min_extent=MIN_INIT_RANGE_M):
-    """Ensure (x_min, z_min, x_max, z_max) has at least min_extent in each dimension."""
-    x_min, z_min, x_max, z_max = coords
-    if (x_max - x_min) < min_extent:
-        mid = (x_min + x_max) / 2
-        half = min_extent / 2
-        x_min, x_max = mid - half, mid + half
-    if (z_max - z_min) < min_extent:
-        mid = (z_min + z_max) / 2
-        half = min_extent / 2
-        z_min, z_max = mid - half, mid + half
-    return [x_min, z_min, x_max, z_max]
+def _center_with_fixed_extent(center_x, center_z, extent):
+    """Return (x_min, z_min, x_max, z_max) with exactly the given extent in each dimension."""
+    half = extent / 2
+    return [
+        center_x - half, center_z - half,
+        center_x + half, center_z + half,
+    ]
 
 
-def fix_init_ranges(bddl_text, init_object_range_m=0.0):
+def fix_init_ranges(bddl_text, init_object_range_m=0.0, max_init_range_m=0.001):
     """
     Fix region ranges for deterministic initialization.
 
-    When init_object_range_m == 0: collapse all region ranges to their center point
-    (exact initialization), then enforce a minimum positive extent so MuJoCo
-    never gets size 0. When init_object_range_m > 0: collapse to center and expand.
+    When init_object_range_m == 0: collapse every region to its center and set extent
+    to max_init_range_m so the environment barely changes across runs (and MuJoCo
+    gets a valid positive size). When init_object_range_m > 0: collapse to center
+    and expand by that amount.
 
     Args:
         bddl_text: BDDL file content
-        init_object_range_m: Valid init range in meters. 0 = exact init (collapse to center).
+        init_object_range_m: Valid init range in meters. 0 = exact init (use max_init_range_m).
+        max_init_range_m: Max extent (m) when init_object_range_m <= 0. Typically from config.
 
     Returns:
         Modified BDDL text with fixed ranges.
@@ -250,8 +246,8 @@ def fix_init_ranges(bddl_text, init_object_range_m=0.0):
         if match:
             coords = list(map(float, match.group(1).split()))
             if init_object_range_m <= 0:
-                new_coords = _collapse_ranges_to_center(coords)
-                new_coords = _ensure_positive_extent(new_coords)
+                collapsed = _collapse_ranges_to_center(coords)
+                new_coords = _center_with_fixed_extent(collapsed[0], collapsed[1], max_init_range_m)
             else:
                 new_coords = _collapse_ranges_to_center(coords)
                 half = init_object_range_m / 2
@@ -269,15 +265,13 @@ def fix_init_ranges(bddl_text, init_object_range_m=0.0):
 # Perturbation functions
 # --------------------------
 
-def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m=0.0, max_move_m=0.05):
+def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
     """
     Move object's init region. Shifts center in X/Z (table plane); no Y (vertical).
 
-    - init_object_range_m: Size of init region. 0 = point; >0 = box. Used for both unperturbed and perturbed.
+    - init_object_range_m: Size of init region. 0 = use max_init_range_m; >0 = box.
     - max_move_m: Max distance (m) from unperturbed center that the object can be shifted (x/z, diagonal ok).
-
-    The perturbed init region is: center = unperturbed_center + (dx, dz), where |dx|,|dz| <= max_move_m;
-    region size = init_object_range_m.
+    - max_init_range_m: Max extent (m) when init_object_range_m <= 0. Typically from config.
     """
     region_name = obj_region_map.get(obj_name)
     if not region_name or region_name not in region_blocks:
@@ -301,9 +295,9 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_
     new_center_x = unperturbed_center_x + delta_x
     new_center_z = unperturbed_center_z + delta_z
 
-    # Init region size: 0 = point; >0 = box (point regions get min extent so MuJoCo size > 0)
+    # Init region size: 0 = use max_init_range_m; >0 = box
     if init_object_range_m <= 0:
-        new_coords = _ensure_positive_extent([new_center_x, new_center_z, new_center_x, new_center_z])
+        new_coords = _center_with_fixed_extent(new_center_x, new_center_z, max_init_range_m)
     else:
         half = init_object_range_m / 2
         new_coords = [
@@ -605,12 +599,12 @@ def add_distractor(bddl_text, target_workspace=None):
 # Apply perturbations
 # --------------------------
 
-def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05):
+def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
     """Apply perturbations to kitchen scenes (deprecated, use apply_perturbations instead)."""
-    return apply_perturbations(bddl_text, perturbations, init_object_range_m, max_move_m)
+    return apply_perturbations(bddl_text, perturbations, init_object_range_m, max_move_m, max_init_range_m)
 
 
-def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05):
+def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001):
     """
     Apply perturbations to any LIBERO scene type.
 
@@ -622,8 +616,9 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
             - "color": list of object names to change color
             - "replace": list of object names to replace
             - "distractor": list of None values (count determines number of distractors)
-        init_object_range_m: Size of init region (m). 0 = point; >0 = box. Used for both unperturbed and perturbed.
+        init_object_range_m: Size of init region (m). 0 = use max_init_range_m; >0 = box.
         max_move_m: Max distance (m) from unperturbed center that move can shift the object.
+        max_init_range_m: Max extent (m) when init_object_range_m <= 0. Set in config YAML.
 
     Returns:
         Modified BDDL text
@@ -635,12 +630,12 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
     print(f"[DEBUG] Detected workspace: {target_workspace}")
     print(f"[DEBUG] Object-Region mapping: {obj_region_map}")
     print(f"[DEBUG] Available regions: {list(region_blocks.keys())}")
-    print(f"[DEBUG] init_object_range_m: {init_object_range_m}, max_move_m: {max_move_m}")
+    print(f"[DEBUG] init_object_range_m: {init_object_range_m}, max_move_m: {max_move_m}, max_init_range_m: {max_init_range_m}")
 
     for key, obj_list in perturbations.items():
         for obj_name in obj_list:
             if key == "move":
-                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m, max_move_m)
+                bddl_text = move_object(bddl_text, obj_name, obj_region_map, region_blocks, init_object_range_m, max_move_m, max_init_range_m)
                 region_blocks = find_region_blocks(bddl_text)
                 obj_region_map = parse_object_region_map(bddl_text, region_blocks)
             elif key == "reorient":
@@ -660,6 +655,8 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
         for _ in perturbations["distractor"]:
             bddl_text = add_distractor(bddl_text, target_workspace)
 
+    # Ensure every region in the scene has minimal extent (all objects, not just perturbed ones)
+    bddl_text = fix_init_ranges(bddl_text, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m)
     return bddl_text
 
 # --------------------------
