@@ -9,12 +9,7 @@ This script:
 4. Runs evaluation scripts after all jobs complete
 
 Usage:
-    # Full pipeline (generate + SLURM jobs + videos + evaluation):
     python scripts/launcher.py --config configs/main.yaml
-
-    # Local tryout: only generate perturbations, then record one config by hand:
-    python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
-    python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
 """
 
 import os
@@ -45,7 +40,6 @@ if perturbation_utils_path.exists():
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
     apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
     validate_bddl = pert_utils.validate_bddl
-    fix_init_ranges = getattr(pert_utils, 'fix_init_ranges', lambda t, r=0: t)
 else:
     raise ImportError(f"Could not find perturbation utilities at {perturbation_utils_path}")
 
@@ -53,14 +47,8 @@ else:
 class Launcher:
     """Main launcher class for managing the pipeline."""
     
-    def __init__(self, config_path: str, run_dir_override: Optional[str] = None):
-        """Initialize launcher with config file.
-        
-        Args:
-            config_path: Path to main.yaml.
-            run_dir_override: If set, use this directory as run_dir (e.g. ./local_run).
-                             Otherwise use run_base_dir from config + timestamped folder.
-        """
+    def __init__(self, config_path: str):
+        """Initialize launcher with config file."""
         self.config_path = Path(config_path)
         with open(self.config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -70,17 +58,16 @@ class Launcher:
         self.scratch_dir = Path(scratch)
         
         # Set up run directory
-        if run_dir_override is not None:
-            self.run_dir = Path(run_dir_override)
+        run_base = self.config.get('run_base_dir')
+        if run_base is None:
+            run_base = self.scratch_dir / 'vla-explainability-runs'
         else:
-            run_base = self.config.get('run_base_dir')
-            if run_base is None:
-                run_base = self.scratch_dir / 'vla-explainability-runs'
-            else:
-                run_base = Path(run_base)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            task_name = self.config.get('task_suite_name', 'libero')
-            self.run_dir = run_base / f"{task_name}_{timestamp}"
+            run_base = Path(run_base)
+        
+        # Create timestamped run directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        task_name = self.config.get('task_suite_name', 'libero')
+        self.run_dir = run_base / f"{task_name}_{timestamp}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"[INFO] Run directory: {self.run_dir}")
@@ -123,17 +110,8 @@ class Launcher:
         
         # Read base BDDL
         base_bddl_text = read_bddl(str(base_bddl))
-
-        # Init object range (m): size of spawn region. 0 = point; >0 = box. Used for unperturbed and perturbed.
-        init_object_range_m = self.config.get('init_object_range_m', 0.0)
-        pert_config = self.config.get('perturbations', {})
-        if 'bddl_spatial' in pert_config:
-            init_object_range_m = pert_config['bddl_spatial'].get('init_object_range_m', init_object_range_m)
-
-        # Fix init ranges (sets region size for unperturbed; perturbed move uses same size)
-        base_bddl_text = fix_init_ranges(base_bddl_text, init_object_range_m=init_object_range_m)
-
-        # Copy base BDDL (unperturbed) with fixed ranges
+        
+        # Copy base BDDL (unperturbed)
         unperturbed_bddl_path = self.bddl_dir / "unperturbed.bddl"
         with open(unperturbed_bddl_path, 'w') as f:
             f.write(base_bddl_text)
@@ -183,38 +161,35 @@ class Launcher:
     def _generate_bddl_spatial_perturbations(self, base_bddl_text: str, start_id: int) -> int:
         """Generate BDDL spatial perturbations."""
         pert_config = self.config['perturbations']['bddl_spatial']
-        init_object_range_m = pert_config.get('init_object_range_m', 0.0)
         specs = pert_config.get('perturbation_specs', [])
         
         pert_id = start_id
+        pert_id_copy = pert_id
         
         for spec in specs:
             pert_type = spec['type']
-            max_move_m = pert_config.get('max_move_m', 0.05)
-
-            # Build perturbation dict for apply_perturbations
+            
+            # Build perturbation dict for apply_perturbations_kitchen
             perturbations = {}
             
             if pert_type == 'distractor':
                 count = spec.get('count', 1)
                 perturbations['distractor'] = [None] * count  # List of None values for distractor count
+            elif pert_type == 'control':
+                # No actual perturbation, but we can still generate a config for control condition
+                pert_id_copy = pert_id  # Use same ID for control condition
+                pert_id = "control"  # Use a special ID for control condition
             else:
                 objects = spec.get('objects', [])
                 if pert_type not in perturbations:
                     perturbations[pert_type] = []
                 perturbations[pert_type].extend(objects)
             
-            # Per-spec override for max_move_m (only applies to type: move)
-            if pert_type == 'move':
-                max_move_m = spec.get('max_move_m', max_move_m)
-            
             # Apply perturbations (use generic function for all scene types)
             try:
                 perturbed_bddl = apply_perturbations(
-                    copy.deepcopy(base_bddl_text),
-                    perturbations,
-                    init_object_range_m=init_object_range_m,
-                    max_move_m=max_move_m,
+                    copy.deepcopy(base_bddl_text), 
+                    perturbations
                 )
                 
                 # Validate
@@ -263,7 +238,10 @@ class Launcher:
                     'description': description
                 })
                 
-                pert_id += 1
+                if pert_id == "control":
+                    pert_id = pert_id_copy  # Reset to original ID for next perturbation
+                else:
+                    pert_id += 1
                 
             except Exception as e:
                 print(f"[ERROR] Failed to generate perturbation {pert_id}: {e}")
@@ -701,13 +679,8 @@ echo "Job completed: {perturbation_id}"
         # Run analysis
         subprocess.run(cmd, check=True)
     
-    def run(self, generate_only: bool = False):
-        """Run the complete pipeline (or only perturbation generation).
-        
-        Args:
-            generate_only: If True, only generate perturbations and print instructions
-                           for running record.py locally; do not submit SLURM jobs.
-        """
+    def run(self):
+        """Run the complete pipeline."""
         print("=" * 80)
         print("VLA Explainability Pipeline Launcher")
         print("=" * 80)
@@ -715,10 +688,6 @@ echo "Job completed: {perturbation_id}"
         
         # Step 1: Generate perturbations
         self.generate_perturbations()
-        
-        if generate_only:
-            self._print_local_recording_instructions()
-            return
         
         # Step 2: Dispatch jobs
         self.dispatch_jobs()
@@ -733,24 +702,6 @@ echo "Job completed: {perturbation_id}"
         print("Pipeline complete!")
         print(f"Results available in: {self.run_dir}")
         print("=" * 80)
-    
-    def _print_local_recording_instructions(self):
-        """Print how to record one perturbation locally."""
-        print("\n" + "=" * 80)
-        print("Generate-only complete. To record one perturbation locally:")
-        print("=" * 80)
-        print(f"\n1. Run record for a single config (e.g. unperturbed or perturbed_0):")
-        print(f"   python scripts/record.py --config {self.config_dir / 'unperturbed.yaml'}")
-        print(f"\n   Or for a specific perturbation:")
-        for info in self.perturbation_info:
-            if info["id"] != "unperturbed":
-                print(f"   python scripts/record.py --config {info['config_file']}")
-                break
-        print(f"\n2. From project root, ensure device/cache_dir in the generated config")
-        print(f"   (in {self.config_dir}) match your machine, or override in the YAML.")
-        print(f"\n3. After recording, render video (optional):")
-        print(f"   python scripts/playback.py --config <same_config.yaml>")
-        print("=" * 80)
 
 
 def main():
@@ -763,22 +714,11 @@ def main():
         required=True,
         help="Path to main.yaml configuration file"
     )
-    parser.add_argument(
-        "--generate-only",
-        action="store_true",
-        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local tryouts."
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Override run directory (e.g. ./local_run). Useful with --generate-only for local step-by-step runs."
-    )
     
     args = parser.parse_args()
     
-    launcher = Launcher(args.config, run_dir_override=args.run_dir)
-    launcher.run(generate_only=args.generate_only)
+    launcher = Launcher(args.config)
+    launcher.run()
 
 
 if __name__ == "__main__":
