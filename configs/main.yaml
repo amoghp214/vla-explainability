@@ -38,14 +38,14 @@ perturbations:
     perturbation_specs:
       - type: move
         objects: ["akita_black_bowl_1", "wine_bottle_1"]
-      - type: reorient
-        objects: ["akita_black_bowl_1", "wine_bottle_1"]
-      - type: color
-        objects: ["akita_black_bowl_1"]
-      - type: distractor
-        count: 1
-      - type: replace
-        objects: ["akita_black_bowl_1"]
+      # - type: reorient
+      #   objects: ["akita_black_bowl_1", "wine_bottle_1"]
+      # - type: color
+      #   objects: ["akita_black_bowl_1"]
+      # - type: distractor
+      #   count: 1
+      # - type: replace
+      #   objects: ["akita_black_bowl_1"]
       - type: control
         objects: []
   
