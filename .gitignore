@@ -19,5 +19,6 @@ explainability/test/*.html
 *.mp4
 libero.egg-info/
 .vscode/
+.cursor/
 
 local_run
