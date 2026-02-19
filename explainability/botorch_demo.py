@@ -4,6 +4,11 @@ BoTorch Bayesian Optimization demo (batch acquisition only).
 Targets BoTorch 0.8.5: uses qExpectedImprovement from monte_carlo (no logei module).
 Same 2D blackbox and heatmap as explainability/bayesian_optimization_demo.py.
 
+Heatmap quality: acquisition-only (qEI) tends to cluster evaluations near one region, so the
+GP heatmap can look very localized (one smooth bowl). For a better estimate over the full domain:
+use use_random_sampling=True, or set random_frac in (0,1) to mix random points with acquisition
+each iteration (e.g. random_frac=0.5 for half random, half qEI).
+
 Install: pip install botorch
 """
 
@@ -73,6 +78,12 @@ def evaluate_blackbox(X: torch.Tensor, fn) -> torch.Tensor:
 # BoTorch optimization loop (maximization, like the original demo)
 # ---------------------------------------------------------------------------
 
+def _random_candidates(batch_size: int, d: int, seed: int, dtype=torch.double):
+    """Pure random sampler for new points: uniform draw in [0, 1]^d. No BoTorch sampler required."""
+    gen = torch.Generator(device="cpu").manual_seed(seed)
+    return torch.rand(batch_size, d, dtype=dtype, generator=gen)
+
+
 def run_botorch_optimization(
     blackbox_fn,
     bounds_dict,
@@ -81,6 +92,8 @@ def run_botorch_optimization(
     batch_size: int = 2,
     seed: int = 1,
     verbose: bool = True,
+    use_random_sampling: bool = False,
+    random_frac: float = 0.0,
 ):
     """
     Run Bayesian optimization with BoTorch (maximization), batch acquisition only.
@@ -93,6 +106,11 @@ def run_botorch_optimization(
         batch_size: q in BoTorch; number of points to suggest per step (parallel eval).
         seed: random seed.
         verbose: print progress.
+        use_random_sampling: if True, suggest new points uniformly at random in [0,1]^d
+            instead of using the acquisition (no StochasticSampler / optimize_acqf needed).
+        random_frac: when using acquisition, fraction of each batch that is random (0--1).
+            E.g. 0.5 = half random, half from qEI. Improves space-filling and heatmap quality
+            (less localized); 0 = pure acquisition (can be very localized).
 
     Returns:
         train_X_norm, train_Y, bounds, gp (last GP fit).
@@ -116,7 +134,13 @@ def run_botorch_optimization(
     train_Y = evaluate_blackbox(train_X, blackbox_fn)
 
     if verbose:
-        print(f"Initial design: {n_init} points, best value = {train_Y.max().item():.6f}")
+        if use_random_sampling:
+            mode = "random sampling"
+        elif random_frac > 0:
+            mode = f"qEI + {random_frac:.0%} random per batch"
+        else:
+            mode = "qEI acquisition"
+        print(f"Initial design: {n_init} points, best value = {train_Y.max().item():.6f} (mode: {mode})")
 
     for iteration in range(n_iter):
         # Fit GP on normalized inputs (recommended for stability)
@@ -129,17 +153,35 @@ def run_botorch_optimization(
         mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
         fit_gpytorch_mll(mll)
 
-        best_f = train_Y.max().item()
-        # 0.8.5: SobolQMCNormalSampler(sample_shape, seed); sample_shape can be int (e.g. 256)
-        sampler = SobolQMCNormalSampler(256, seed=seed + iteration)
-        acq = qExpectedImprovement(model=gp, best_f=best_f, sampler=sampler)
-        candidate_norm, _ = optimize_acqf(
-            acq_function=acq,
-            bounds=norm_bounds,
-            q=batch_size,
-            num_restarts=5,
-            raw_samples=64,
-        )
+        if use_random_sampling:
+            # Pure random sampler for new points: no acquisition, no BoTorch sampler
+            candidate_norm = _random_candidates(batch_size, d, seed + 1000 + iteration)
+        else:
+            n_acq = batch_size
+            n_rand = 0
+            if 0 < random_frac < 1:
+                n_rand = max(1, int(round(batch_size * random_frac)))
+                n_acq = batch_size - n_rand
+            if n_acq > 0:
+                best_f = train_Y.max().item()
+                sampler = SobolQMCNormalSampler(256, seed=seed + iteration)
+                acq = qExpectedImprovement(model=gp, best_f=best_f, sampler=sampler)
+                acq_candidates, _ = optimize_acqf(
+                    acq_function=acq,
+                    bounds=norm_bounds,
+                    q=n_acq,
+                    num_restarts=5,
+                    raw_samples=64,
+                )
+            if n_rand > 0:
+                rand_candidates = _random_candidates(n_rand, d, seed + 2000 + iteration)
+                candidate_norm = (
+                    torch.cat([acq_candidates, rand_candidates], dim=0)
+                    if n_acq > 0
+                    else rand_candidates
+                )
+            else:
+                candidate_norm = acq_candidates
 
         # Evaluate the q points (here: sequential in-process; for VLA: dispatch q
         # SLURM jobs in parallel, wait for all, then collect q metrics as new_Y).
@@ -243,6 +285,15 @@ def plot_botorch_heatmap(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="BoTorch BO demo (maximize cos(10x) + sin(10y))")
+    parser.add_argument("--random-sampling", action="store_true", help="Use pure random sampler for new points (no acquisition)")
+    parser.add_argument("--random-frac", type=float, default=0.0, help="Fraction of each batch that is random when using acquisition (0-1). Improves heatmap coverage, e.g. 0.5")
+    parser.add_argument("--n-init", type=int, default=20)
+    parser.add_argument("--n-iter", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=2)
+    args = parser.parse_args()
+
     print("BoTorch Bayesian Optimization demo (maximize cos(10x) + sin(10y))")
     print("=" * 60)
 
@@ -251,15 +302,23 @@ if __name__ == "__main__":
     train_X_norm, train_Y, bounds, gp = run_botorch_optimization(
         blackbox_fn=cos_black_box_function,
         bounds_dict=pbounds,
-        n_init=20,
-        n_iter=20,
-        batch_size=20,
+        n_init=args.n_init,
+        n_iter=args.n_iter,
+        batch_size=args.batch_size,
         seed=1,
         verbose=True,
+        use_random_sampling=args.random_sampling,
+        random_frac=args.random_frac,
     )
 
     out_dir = Path(__file__).resolve().parent / "test"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.random_sampling:
+        out_name = "botorch_heatmap_random.png"
+    elif args.random_frac > 0:
+        out_name = f"botorch_heatmap_mix_{args.random_frac:.0%}.png"
+    else:
+        out_name = "botorch_heatmap.png"
     plot_botorch_heatmap(
         pbounds,
         gp,
@@ -267,6 +326,6 @@ if __name__ == "__main__":
         step=0.1,
         cmap="RdBu_r",
         show=False,
-        output_path=out_dir / "botorch_heatmap.png",
+        output_path=out_dir / out_name,
     )
-    print(f"Heatmap saved to {out_dir / 'botorch_heatmap.png'}")
+    print(f"Heatmap saved to {out_dir / out_name}")
