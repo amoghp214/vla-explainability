@@ -252,8 +252,8 @@ if __name__ == "__main__":
         blackbox_fn=cos_black_box_function,
         bounds_dict=pbounds,
         n_init=20,
-        n_iter=5,
-        batch_size=2,
+        n_iter=20,
+        batch_size=20,
         seed=1,
         verbose=True,
     )
