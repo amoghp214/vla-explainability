@@ -99,6 +99,17 @@ slurm:
 run_base_dir: null
 
 # =============================================================================
+# Bayesian Optimization (optional)
+# =============================================================================
+# Used by: python -m explainability.vla_bayesian_optimization --config configs/main.yaml
+# bayesian_optimization:
+#   pbounds: { dx: [-0.05, 0.05], dz: [-0.05, 0.05] }
+#   object_names: ["akita_black_bowl_1"]
+#   batch_size: 2
+#   init_points: 5
+#   n_iter: 10
+
+# =============================================================================
 # Evaluation Configuration
 # =============================================================================
 evaluation:
