@@ -1,17 +1,11 @@
 """
-BoTorch Bayesian Optimization demo.
+BoTorch Bayesian Optimization demo (batch acquisition only).
 
-This script mirrors explainability/bayesian_optimization_demo.py but uses BoTorch
-instead of bayes_opt. It demonstrates:
-  - Single-point acquisition (q=1) in a loop
-  - Optional batch acquisition (q>1) for parallel evaluations
-  - Same 2D blackbox functions and heatmap visualization
+This script uses BoTorch with batch (q-) acquisition for parallel evaluations.
+Same 2D blackbox and heatmap as explainability/bayesian_optimization_demo.py.
 
 Install BoTorch (run in your env; do not add to requirements yet):
   pip install botorch
-
-BoTorch depends on PyTorch and gpytorch; pip install botorch will pull them in.
-For a specific CUDA PyTorch, install PyTorch first, then: pip install botorch
 """
 
 import os
@@ -21,13 +15,14 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-# BoTorch
+# BoTorch: batch acquisition only
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
-from botorch.acquisition import LogExpectedImprovement
 from botorch.optim import optimize_acqf
+from botorch.acquisition.logei import qLogExpectedImprovement
+from botorch.sampling import SobolQMCNormalSampler
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
 
@@ -79,26 +74,24 @@ def run_botorch_optimization(
     bounds_dict,
     n_init: int = 10,
     n_iter: int = 5,
-    batch_size: int = 1,
+    batch_size: int = 2,
     seed: int = 1,
     verbose: bool = True,
 ):
     """
-    Run Bayesian optimization with BoTorch (maximization).
+    Run Bayesian optimization with BoTorch (maximization), batch acquisition only.
 
     Args:
         blackbox_fn: function(x, y) -> float to maximize.
         bounds_dict: e.g. {'x': (-5, 5), 'y': (-5, 5)}.
         n_init: number of random initial points.
-        n_iter: number of BO steps (each step can suggest batch_size points).
-        batch_size: q in BoTorch; number of points to suggest per step (for parallel eval).
+        n_iter: number of BO steps (each step suggests batch_size points).
+        batch_size: q in BoTorch; number of points to suggest per step (parallel eval).
         seed: random seed.
         verbose: print progress.
 
     Returns:
-        train_X: (N, 2) all points evaluated (in normalized [0,1]^2).
-        train_Y: (N, 1) all objective values.
-        bounds: (2, 2) tensor of bounds (for unnormalizing).
+        train_X_norm, train_Y, bounds, gp (last GP fit).
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -132,21 +125,21 @@ def run_botorch_optimization(
         mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
         fit_gpytorch_mll(mll)
 
-        # Acquisition: maximize EI (best observed value so far)
         best_f = train_Y.max().item()
-        acq = LogExpectedImprovement(model=gp, best_f=best_f)
-
-        # Optimize acquisition to get next point(s) in normalized [0,1]^d
-        candidate_norm, acq_value = optimize_acqf(
+        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([256]), seed=seed + iteration)
+        acq = qLogExpectedImprovement(
+            model=gp, best_f=best_f, sampler=sampler, fat=True
+        )
+        candidate_norm, _ = optimize_acqf(
             acq_function=acq,
             bounds=norm_bounds,
             q=batch_size,
             num_restarts=5,
             raw_samples=64,
         )
-        # candidate_norm: (batch_size, d)
 
-        # Evaluate in real space
+        # Evaluate the q points (here: sequential in-process; for VLA: dispatch q
+        # SLURM jobs in parallel, wait for all, then collect q metrics as new_Y).
         candidate_real = unnormalize(candidate_norm)
         new_Y = evaluate_blackbox(candidate_real, blackbox_fn)
 
@@ -257,7 +250,7 @@ if __name__ == "__main__":
         bounds_dict=pbounds,
         n_init=20,
         n_iter=5,
-        batch_size=1,
+        batch_size=2,
         seed=1,
         verbose=True,
     )
@@ -274,17 +267,3 @@ if __name__ == "__main__":
         output_path=out_dir / "botorch_heatmap.png",
     )
     print(f"Heatmap saved to {out_dir / 'botorch_heatmap.png'}")
-
-    # Optional: run with batch_size=2 to see batch suggestion (same interface)
-    print("\n" + "=" * 60)
-    print("Batch demo (q=2): two points suggested per iteration")
-    train_X_norm_b, train_Y_b, _, gp_b = run_botorch_optimization(
-        blackbox_fn=cos_black_box_function,
-        bounds_dict=pbounds,
-        n_init=10,
-        n_iter=3,
-        batch_size=2,
-        seed=42,
-        verbose=True,
-    )
-    print("Batch run done.")
