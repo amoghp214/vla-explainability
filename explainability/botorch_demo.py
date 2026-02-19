@@ -1,11 +1,10 @@
 """
 BoTorch Bayesian Optimization demo (batch acquisition only).
 
-This script uses BoTorch with batch (q-) acquisition for parallel evaluations.
+Targets BoTorch 0.8.5: uses qExpectedImprovement from monte_carlo (no logei module).
 Same 2D blackbox and heatmap as explainability/bayesian_optimization_demo.py.
 
-Install BoTorch (run in your env; do not add to requirements yet):
-  pip install botorch
+Install: pip install botorch
 """
 
 import os
@@ -15,15 +14,20 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-# BoTorch: batch acquisition only
+# BoTorch 0.8.5–compatible imports (no botorch.acquisition.logei in 0.8.x)
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
 from botorch.optim import optimize_acqf
-from botorch.acquisition.logei import qLogExpectedImprovement
-from botorch.sampling import SobolQMCNormalSampler
+from botorch.acquisition.monte_carlo import qExpectedImprovement
 from gpytorch.mlls import ExactMarginalLogLikelihood
+
+# SobolQMCNormalSampler: in 0.8.5 lives in botorch.sampling.normal; many envs re-export from botorch.sampling
+try:
+    from botorch.sampling import SobolQMCNormalSampler
+except ImportError:
+    from botorch.sampling.normal import SobolQMCNormalSampler
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +130,9 @@ def run_botorch_optimization(
         fit_gpytorch_mll(mll)
 
         best_f = train_Y.max().item()
-        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([256]), seed=seed + iteration)
-        acq = qLogExpectedImprovement(
-            model=gp, best_f=best_f, sampler=sampler, fat=True
-        )
+        # 0.8.5: SobolQMCNormalSampler(sample_shape, seed); sample_shape can be int (e.g. 256)
+        sampler = SobolQMCNormalSampler(256, seed=seed + iteration)
+        acq = qExpectedImprovement(model=gp, best_f=best_f, sampler=sampler)
         candidate_norm, _ = optimize_acqf(
             acq_function=acq,
             bounds=norm_bounds,
