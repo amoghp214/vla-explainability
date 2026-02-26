@@ -37,6 +37,7 @@ dependencies:
       - bayesian-optimization==1.4.3
       - bddl==1.0.1
       - bitsandbytes==0.45.5
+      - botorch==0.8.5
       - cachetools==5.5.2
       - certifi==2025.8.3
       - charset-normalizer==3.4.3

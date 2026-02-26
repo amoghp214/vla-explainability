@@ -43,9 +43,14 @@ def black_box_function(x: float, y: float) -> float:
     return 1.0 * (x - 2) ** 2 + (y - 3) ** 2 + 10.0
 
 
-def cos_black_box_function(x: float, y: float) -> float:
-    return float(np.cos(10 * x) + np.sin(10 * y))
+def cossin_black_box_function(x: float, y: float) -> float:
+    return float(np.cos(4 * x) + np.sin(4 * y))
 
+def cos_black_box_function(x: float, y: float) -> float:
+    return float(np.cos(10 * x))
+
+def sin_black_box_function(x: float, y: float) -> float:
+    return float(np.sin(4*y))
 
 def saddle_black_box_function(x: float, y: float) -> float:
     return x ** 2 - y ** 2
@@ -198,7 +203,15 @@ def run_botorch_optimization(
                   f"new values = {new_Y.squeeze().tolist()}, "
                   f"best so far = {train_Y.max().item():.6f}")
         
-        plot_botorch_heatmap(bounds_dict, )
+        plot_botorch_heatmap(
+            bounds_dict,
+            gp,
+            train_X_norm,
+            step=0.1,
+            cmap="RdBu_r",
+            show=False,
+            output_path=Path(__file__).resolve().parent / "test" / "mid_botorch_heatmap.png",
+        )
 
     best_idx = train_Y.argmax().item()
     best_x_norm = train_X_norm[best_idx]
@@ -247,6 +260,13 @@ def plot_botorch_heatmap(
         mean = posterior.mean.squeeze(-1).numpy()
 
     Z = mean.reshape(len(y_vals), len(x_vals))
+
+    # for i in range(Z.shape[0]):
+    #     for j in range(Z.shape[1]):
+    #         assert abs(cos_black_box_function(x_vals[j], y_vals[i]) - Z[i, j]) < 1e-4, (
+    #             f"Mismatch at (x={x_vals[j]:.2f}, y={y_vals[i]:.2f}): "
+    #             f"expected {cos_black_box_function(x_vals[j], y_vals[i]):.4f}, got {Z[i, j]:.4f}"
+    #         )
     print(f"Predicted value range: min = {Z.min():.4f}, max = {Z.max():.4f}")
 
     plt.figure()
@@ -268,7 +288,7 @@ def plot_botorch_heatmap(
     train_X_real = (train_X_norm.numpy() * (upper - lower) + lower)
     n_pts = train_X_real.shape[0]
     s = max(1, min(25, 5000 / n_pts))  # smaller when many points: ~20 at n=250, ~10 at n=500, ~2 at n=2500
-    alpha = 0.85 if n_pts <= 80 else max(0.2, 1.2 - 0.002 * n_pts)
+    alpha = 0.85 if n_pts <= 80 else max(0.2, 1 - 0.002 * n_pts)
     plt.scatter(train_X_real[:, 0], train_X_real[:, 1], c="k", s=s, alpha=alpha, label=f"observed (n={n_pts})")
     plt.legend()
 
@@ -281,6 +301,7 @@ def plot_botorch_heatmap(
 
     if show:
         plt.show()
+    plt.close('all')
 
     return Z, x_vals, y_vals
 
@@ -294,9 +315,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BoTorch BO demo (maximize cos(10x) + sin(10y))")
     parser.add_argument("--random-sampling", type=bool, default=True, help="Use pure random sampler for new points (no acquisition)")
     parser.add_argument("--random-frac", type=float, default=0.0, help="Fraction of each batch that is random when using acquisition (0-1). Improves heatmap coverage, e.g. 0.5")
-    parser.add_argument("--n-init", type=int, default=20)
-    parser.add_argument("--n-iter", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--n-init", type=int, default=10)
+    parser.add_argument("--n-iter", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=10)
     args = parser.parse_args()
 
     print("BoTorch Bayesian Optimization demo (maximize cos(10x) + sin(10y))")
@@ -305,7 +326,7 @@ if __name__ == "__main__":
     pbounds = {"x": (-5, 5), "y": (-5, 5)}
 
     train_X_norm, train_Y, bounds, gp = run_botorch_optimization(
-        blackbox_fn=saddle_black_box_function,
+        blackbox_fn=cossin_black_box_function,
         bounds_dict=pbounds,
         n_init=args.n_init,
         n_iter=args.n_iter,
