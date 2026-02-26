@@ -110,6 +110,19 @@ run_base_dir: null
 #   n_iter: 10
 
 # =============================================================================
+# Random design (BoTorch heatmap) - optional
+# =============================================================================
+# Used by: python scripts/launcher.py --config configs/main.yaml --random-design
+# Generates n_design random (x, z) translation perturbations, runs record jobs,
+# computes VLA metric per point, fits GP and saves heatmap to run_dir.
+# random_design:
+#   n_design: 20
+#   seed: 1
+#   bounds_x: [-0.05, 0.05]   # x translation range (m)
+#   bounds_z: [-0.05, 0.05]   # z translation range (m)
+#   object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
+
+# =============================================================================
 # Evaluation Configuration
 # =============================================================================
 evaluation:

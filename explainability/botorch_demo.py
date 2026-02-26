@@ -197,6 +197,8 @@ def run_botorch_optimization(
             print(f"  Iter {iteration + 1}: suggested {batch_size} point(s), "
                   f"new values = {new_Y.squeeze().tolist()}, "
                   f"best so far = {train_Y.max().item():.6f}")
+        
+        plot_botorch_heatmap(bounds_dict, )
 
     best_idx = train_Y.argmax().item()
     best_x_norm = train_X_norm[best_idx]
@@ -262,9 +264,12 @@ def plot_botorch_heatmap(
     plt.title("BoTorch GP posterior mean (optimizer surrogate)")
     plt.colorbar(im, label="predicted value")
 
-    # Overlay observed points
+    # Overlay observed points (scale marker size so 500+ points don't overlap into a few blobs)
     train_X_real = (train_X_norm.numpy() * (upper - lower) + lower)
-    plt.scatter(train_X_real[:, 0], train_X_real[:, 1], c="k", s=20, alpha=0.8, label="observed")
+    n_pts = train_X_real.shape[0]
+    s = max(1, min(25, 5000 / n_pts))  # smaller when many points: ~20 at n=250, ~10 at n=500, ~2 at n=2500
+    alpha = 0.85 if n_pts <= 80 else max(0.2, 1.2 - 0.002 * n_pts)
+    plt.scatter(train_X_real[:, 0], train_X_real[:, 1], c="k", s=s, alpha=alpha, label=f"observed (n={n_pts})")
     plt.legend()
 
     if output_path:
@@ -287,7 +292,7 @@ def plot_botorch_heatmap(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="BoTorch BO demo (maximize cos(10x) + sin(10y))")
-    parser.add_argument("--random-sampling", action="store_true", help="Use pure random sampler for new points (no acquisition)")
+    parser.add_argument("--random-sampling", type=bool, default=True, help="Use pure random sampler for new points (no acquisition)")
     parser.add_argument("--random-frac", type=float, default=0.0, help="Fraction of each batch that is random when using acquisition (0-1). Improves heatmap coverage, e.g. 0.5")
     parser.add_argument("--n-init", type=int, default=20)
     parser.add_argument("--n-iter", type=int, default=5)
@@ -300,7 +305,7 @@ if __name__ == "__main__":
     pbounds = {"x": (-5, 5), "y": (-5, 5)}
 
     train_X_norm, train_Y, bounds, gp = run_botorch_optimization(
-        blackbox_fn=cos_black_box_function,
+        blackbox_fn=saddle_black_box_function,
         bounds_dict=pbounds,
         n_init=args.n_init,
         n_iter=args.n_iter,

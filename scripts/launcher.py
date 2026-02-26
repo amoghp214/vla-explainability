@@ -12,6 +12,9 @@ Usage:
     # Full pipeline (generate + SLURM jobs + videos + evaluation):
     python scripts/launcher.py --config configs/main.yaml
 
+    # Random-design mode: random (x, z) translation perturbations -> VLA metric -> heatmap:
+    python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20 --bounds -0.05,0.05
+
     # Local tryout: only generate perturbations, then record one config by hand:
     python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
     python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
@@ -20,7 +23,7 @@ Usage:
 import json
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
@@ -33,6 +36,10 @@ from scripts.pipeline.slurm import dispatch_batch
 from scripts.pipeline.generate_perturbations import generate_perturbations_from_config, save_perturbation_manifest
 from scripts.pipeline.render import render_videos
 from scripts.pipeline.evaluation import run_evaluation
+from scripts.pipeline.random_design import (
+    generate_random_design_perturbations,
+    run_heatmap,
+)
 
 
 class Launcher:
@@ -49,6 +56,7 @@ class Launcher:
         self.jobs_dir = rd.jobs_dir
         self.config = rd.config
         self.perturbation_info = []
+        self.design_points: List[dict] = []  # Used in random-design mode: [{id, x, z}, ...]
 
         print(f"[INFO] Run directory: {self.run_dir}")
 
@@ -75,6 +83,37 @@ class Launcher:
         )
         print(f"[INFO] Generated {len(self.perturbation_info)} perturbation files")
         save_perturbation_manifest(self.perturbation_info, self.run_dir)
+
+    def generate_random_design_perturbations(
+        self,
+        n_design: int,
+        bounds_x: Tuple[float, float],
+        bounds_z: Tuple[float, float],
+        object_names: List[str],
+        seed: int,
+        include_control: bool = True,
+    ) -> None:
+        """Generate random (x, z) translation perturbations for heatmap mode."""
+        print("\n[INFO] Generating random-design perturbations (x, z translation)...")
+        self.perturbation_info, self.design_points = generate_random_design_perturbations(
+            config=self.config,
+            bddl_dir=self.bddl_dir,
+            config_dir=self.config_dir,
+            results_dir=self.results_dir,
+            create_record_config_fn=self._create_record_config_fn,
+            n_design=n_design,
+            bounds_x=bounds_x,
+            bounds_z=bounds_z,
+            object_names=object_names,
+            seed=seed,
+            include_control=include_control,
+        )
+        print(f"[INFO] Generated unperturbed + control + {len(self.design_points)} random design points")
+        save_perturbation_manifest(self.perturbation_info, self.run_dir)
+        design_points_path = self.run_dir / "random_design_points.json"
+        with open(design_points_path, "w") as f:
+            json.dump(self.design_points, f, indent=2)
+        print(f"[INFO] Saved design points to {design_points_path}")
 
     def dispatch_jobs(self) -> None:
         """Dispatch SLURM jobs via pipeline batch dispatch."""
@@ -115,6 +154,19 @@ class Launcher:
             project_root=PROJECT_ROOT,
         )
 
+    def run_heatmap(self, bounds_x: Tuple[float, float], bounds_z: Tuple[float, float]) -> None:
+        """Build heatmap of VLA metric vs (x, z) translation from analysis results."""
+        run_heatmap(
+            run_dir=self.run_dir,
+            design_points=self.design_points,
+            analysis_results_path=self.run_dir / "analysis_results.json",
+            bounds_x=bounds_x,
+            bounds_z=bounds_z,
+            model_name="SingleTaskGP",
+            step=0.02,
+            project_root=PROJECT_ROOT,
+        )
+
     def run(self, generate_only: bool = False) -> None:
         if generate_only:
             self.generate_perturbations()
@@ -131,6 +183,57 @@ class Launcher:
         print("\n" + "=" * 80)
         print("Pipeline complete!")
         print(f"Results available in: {self.run_dir}")
+        print("=" * 80)
+
+    def run_random_design(
+        self,
+        n_design: int,
+        bounds_x: Tuple[float, float],
+        bounds_z: Tuple[float, float],
+        object_names: List[str],
+        seed: int,
+        generate_only: bool = False,
+    ) -> None:
+        """Run random-design pipeline: generate (x,z) perturbations -> dispatch -> evaluate -> heatmap."""
+        print("=" * 80)
+        print("VLA Random-Design Pipeline (metric vs x, z translation)")
+        print("=" * 80)
+        print(f"Run directory: {self.run_dir}")
+        print(f"n_design={n_design}, bounds_x={bounds_x}, bounds_z={bounds_z}, object={object_names}, seed={seed}")
+        self.generate_random_design_perturbations(
+            n_design=n_design,
+            bounds_x=bounds_x,
+            bounds_z=bounds_z,
+            object_names=object_names,
+            seed=seed,
+            include_control=True,
+        )
+        if generate_only:
+            self._print_random_design_instructions()
+            return
+        self.dispatch_jobs()
+        self.render_videos()
+        eval_config = self.config.get("evaluation", {})
+        if not eval_config.get("enabled", False):
+            print("[INFO] Evaluation was disabled in config; enabling for random-design heatmap.")
+            self.config.setdefault("evaluation", {})["enabled"] = True
+        self.run_evaluation()
+        self.run_heatmap(bounds_x=bounds_x, bounds_z=bounds_z)
+        print("\n" + "=" * 80)
+        print("Random-design pipeline complete!")
+        print(f"Results and heatmap in: {self.run_dir}")
+        print("=" * 80)
+
+    def _print_random_design_instructions(self) -> None:
+        print("\n" + "=" * 80)
+        print("Random-design generate-only complete. Next steps:")
+        print("=" * 80)
+        print(f"\n1. Record unperturbed, control, and rd_* configs (e.g. with SLURM or locally):")
+        print(f"   python scripts/record.py --config {self.config_dir / 'unperturbed.yaml'}")
+        print(f"   python scripts/record.py --config {self.config_dir / 'control.yaml'}")
+        print(f"   python scripts/record.py --config {self.config_dir / 'rd_0.yaml'}")
+        print(f"\n2. After all HDF5s are in {self.results_dir}, run evaluation and heatmap:")
+        print(f"   (Re-run launcher without --generate-only, or run analysis + heatmap manually.)")
         print("=" * 80)
 
     def _print_local_recording_instructions(self) -> None:
@@ -157,7 +260,7 @@ def main() -> None:
     parser.add_argument(
         "--generate-only",
         action="store_true",
-        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local tryouts.",
+        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local step-by-step runs.",
     )
     parser.add_argument(
         "--run-dir",
@@ -165,7 +268,85 @@ def main() -> None:
         default=None,
         help="Override run directory (e.g. ./local_run). Useful with --generate-only for local step-by-step runs.",
     )
+    # Random-design mode: random (x, z) translation -> VLA metric -> heatmap
+    parser.add_argument(
+        "--random-design",
+        action="store_true",
+        help="Run random-design pipeline: generate n_design random (x,z) move perturbations, dispatch jobs, run VLA metric, produce heatmap of metric vs x, z translation.",
+    )
+    parser.add_argument(
+        "--n-design",
+        type=int,
+        default=None,
+        help="Number of random design points (for --random-design). Overrides config random_design.n_design if set.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for design sampling (for --random-design).",
+    )
+    parser.add_argument(
+        "--bounds",
+        type=str,
+        default=None,
+        help="Comma-separated low,high for both x and z in meters (e.g. -0.05,0.05). If omitted, uses (-max_move_m, max_move_m) from config perturbations.bddl_spatial.",
+    )
+    parser.add_argument(
+        "--objects",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Object name(s) for move perturbation (for --random-design). Must be exactly one object. Overrides config random_design.object_names.",
+    )
     args = parser.parse_args()
+
+    if args.random_design:
+        launcher = Launcher(args.config, run_dir_override=args.run_dir)
+        config = launcher.config
+        rd_config = config.get("random_design", {})
+        n_design = args.n_design if args.n_design is not None else rd_config.get("n_design", 20)
+        seed = args.seed if args.seed is not None else rd_config.get("seed", 1)
+        if args.bounds:
+            try:
+                low, high = map(float, args.bounds.split(","))
+                bounds_x = bounds_z = (low, high)
+            except Exception:
+                max_move_m = config.get("perturbations", {}).get("bddl_spatial", {}).get("max_move_m", 0.05)
+                default_bounds = (-max_move_m, max_move_m)
+                bounds_x = bounds_z = default_bounds
+        else:
+            max_move_m = config.get("perturbations", {}).get("bddl_spatial", {}).get("max_move_m", 0.05)
+            default_bounds = (-max_move_m, max_move_m)
+            bx = rd_config.get("bounds_x")
+            bz = rd_config.get("bounds_z")
+            if bx is not None or bz is not None:
+                bounds_x = tuple(bx) if isinstance(bx, (list, tuple)) else default_bounds
+                bounds_z = tuple(bz) if isinstance(bz, (list, tuple)) else default_bounds
+            else:
+                bounds_x = bounds_z = default_bounds
+        object_names = args.objects if args.objects is not None else rd_config.get("object_names")
+        if not object_names or len(object_names) != 1:
+            # Fallback from main perturbation specs
+            specs = config.get("perturbations", {}).get("bddl_spatial", {}).get("perturbation_specs", [])
+            for s in specs:
+                if s.get("type") == "move" and s.get("objects"):
+                    object_names = s["objects"][:1]
+                    break
+            if not object_names or len(object_names) != 1:
+                raise ValueError(
+                    "Random-design requires exactly one object. Set --objects or config random_design.object_names (e.g. [\"akita_black_bowl_1\"])."
+                )
+        launcher.run_random_design(
+            n_design=n_design,
+            bounds_x=bounds_x,
+            bounds_z=bounds_z,
+            object_names=object_names,
+            seed=seed,
+            generate_only=args.generate_only,
+        )
+        return
+
     launcher = Launcher(args.config, run_dir_override=args.run_dir)
     launcher.run(generate_only=args.generate_only)
 

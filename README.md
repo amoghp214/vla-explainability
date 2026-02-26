@@ -8,6 +8,7 @@ Pipeline for generating perturbed LIBERO datasets and recording OpenVLA demonstr
 
 - [Overview](#overview)
 - [Quick Start](#quick-start)
+- [Random-design mode (metric vs translation heatmap)](#random-design-mode-metric-vs-translation-heatmap)
 - [Configuration](#configuration)
 - [Perturbation types and spec dicts](#perturbation-types-and-spec-dicts)
 - [Local runs (no SLURM)](#local-runs-no-slurm)
@@ -26,7 +27,7 @@ The system:
 2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
 3. **Post-processes** — Renders videos from HDF5 recordings and runs evaluation (trajectory comparison, metrics).
 
-You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally.
+You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally. A **random-design** mode generates random (x, z) translation perturbations, runs the pipeline, and produces a heatmap of the VLA metric vs translation (see [Random-design mode](#random-design-mode-metric-vs-translation-heatmap)).
 
 ---
 
@@ -61,7 +62,59 @@ Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
 
 ---
 
-## Configuration
+## Random-design mode (metric vs translation heatmap)
+
+Random-design treats **one perturbation run as one black-box evaluation**: the input is (x, z) translation (move) for a single object, and the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed). The launcher generates `n_design` random (x, z) points, dispatches record jobs, runs evaluation, fits a BoTorch GP, and saves a **heatmap of metric vs x, z translation**.
+
+### Usage
+
+```bash
+# Full pipeline: generate random points → SLURM → evaluate → heatmap
+# Bounds default to (-max_move_m, max_move_m) from config (see Configuration)
+python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20
+
+# Override bounds (comma-separated low,high for both x and z, in meters)
+python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20 --bounds -0.05,0.05
+
+# Generate only (then record and re-run without --generate-only to get heatmap)
+python scripts/launcher.py --config configs/main.yaml --random-design --generate-only --run-dir ./rd_run
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--random-design` | Enable random-design pipeline (random x, z move → metric → heatmap). |
+| `--n-design` | Number of random design points (default from config or 20). |
+| `--seed` | Random seed for sampling (default from config or 1). |
+| `--bounds` | Optional. Comma-separated `low,high` in meters for both x and z. If omitted, uses **`(-max_move_m, max_move_m)`** from `perturbations.bddl_spatial.max_move_m` in the config. |
+| `--objects` | Object name for move (exactly one). If omitted, uses first move object from `perturbation_specs` in config. |
+
+### Config (optional)
+
+You can set defaults in `configs/main.yaml` under `random_design`:
+
+```yaml
+random_design:
+  n_design: 20
+  seed: 1
+  bounds_x: [-0.05, 0.05]   # optional; default from max_move_m
+  bounds_z: [-0.05, 0.05]   # optional; default from max_move_m
+  object_names: ["akita_black_bowl_1"]   # exactly one object
+```
+
+If `bounds_x` / `bounds_z` are omitted, they default to `(-max_move_m, max_move_m)` from `perturbations.bddl_spatial.max_move_m`.
+
+### Outputs
+
+In the run directory you get:
+
+- **`random_design_points.json`** — List of `{id, x, z}` for each design point (e.g. `rd_0`, `rd_1`, ...).
+- **`heatmap_metric_vs_translation.png`** — Heatmap of the GP-predicted VLA metric over (x, z) after evaluation.
+
+Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, etc. Perturbation IDs are `unperturbed`, `control`, and `rd_0`, `rd_1`, ... for the random design points.
+
+---
 
 ### Base task and recording
 
@@ -80,8 +133,8 @@ Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
 - **`perturbations.types`** — List: `bddl_spatial`, `language` (or both).
 - **`perturbations.bddl_spatial`**:
   - **`max_init_range_m`** — Extent (m) used for every init region when init is “exact,” so the env is nearly deterministic and MuJoCo gets positive geom size. Default `0.001` (1 mm).
-  - **`max_move_m`** — Default max distance (m) for “move” perturbations (can be overridden per spec).
-  - **`perturbation_specs`** — List of entries; each entry produces one run (one BDDL + one record config).
+- **`max_move_m`** — Default max distance (m) for “move” perturbations (can be overridden per spec). Also used as the **default translation bounds** for [random-design mode](#random-design-mode-metric-vs-translation-heatmap): if bounds are not set, x and z are sampled in `(-max_move_m, max_move_m)`.
+- **`perturbation_specs`** — List of entries; each entry produces one run (one BDDL + one record config).
 
 ### Perturbation spec entries (YAML)
 
@@ -201,11 +254,13 @@ After a run (full or generate-only), the run directory looks like:
 run_dir/
 ├── main_config.yaml           # Copy of main config
 ├── perturbation_manifest.json  # List of perturbations and descriptions
+├── random_design_points.json   # (Random-design only) design points {id, x, z}
+├── heatmap_metric_vs_translation.png  # (Random-design only) metric vs x,z heatmap
 ├── job_summary.json            # (After jobs) completed/failed counts
 ├── analysis_results.json       # (After evaluation) metrics
 ├── bddl_files/
 │   ├── unperturbed.bddl
-│   ├── perturbed_0.bddl
+│   ├── perturbed_0.bddl       # or rd_0.bddl, rd_1.bddl, ... in random-design
 │   └── ...
 ├── configs/
 │   ├── unperturbed.yaml
@@ -266,7 +321,7 @@ Confirm `base_bddl_file` exists and object names in `perturbation_specs` match t
 
 - **Spatial:** `libero/libero/utils/generate_perturbation_bddl.py` — `apply_perturbations`, `move_object`, `reorient_object`, `change_color`, `replace_object`, `add_distractor`, and `generate_move_spec_dict`.
 - **Language:** `explainability/perturbations/language/generate_perturbations.py`.
-- **Launcher:** `scripts/launcher.py` — `_generate_bddl_spatial_perturbations`, `_generate_language_perturbations`.
+- **Launcher:** `scripts/launcher.py` — config-driven generation; random-design in `run_random_design()` and `scripts/pipeline/random_design.py` (`generate_random_design_perturbations`, `run_heatmap`).
 
 ### Custom move positions
 
