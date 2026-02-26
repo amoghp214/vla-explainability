@@ -10,8 +10,8 @@ device: cuda:0
 cache_dir: /home/hice1/vkulkarni46/scratch/huggingface  # Replace with your cache directory
 
 # Original BDDL file (will be used as base for perturbations)
-base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
-base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
+base_bddl_file: libero/libero/bddl_files/libero_90/KITCHEN_SCENE1_put_the_black_bowl_on_the_plate.bddl
+base_prompt: put the black bowl on the plate
 
 # Recording parameters
 action_scale: 1.0
