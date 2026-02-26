@@ -72,7 +72,7 @@ from transformers import AutoModelForVision2Seq, AutoProcessor
 
 from libero.libero.envs import OffScreenRenderEnv
 
-from temporal_perturbations import (
+from libero.libero.utils.temporal_perturbations import (
     TemporalPerturbationSpec,
     TemporalPerturbationManager,
     add_hidden_objects_to_bddl,
