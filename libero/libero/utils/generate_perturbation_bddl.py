@@ -744,27 +744,27 @@ def validate_bddl(bddl_text):
     region_blocks = find_region_blocks(bddl_text)
     available_regions = set(region_blocks.keys())
     
-    # Pattern: (On object_name target_region_name)
-    # The region_name format is: target_regionname or just regionname
+    # Pattern: (On object_name target_region_name) or (On obj1 obj2) for object-on-object
+    # The second arg can be a region (e.g. kitchen_table_akita_black_bowl_init_region) or
+    # a declared object (e.g. plate_1 in (And (On akita_black_bowl_1 plate_1))).
     init_region_pattern = r"\(On\s+\w+\s+([\w_]+)\)"
     for match in re.finditer(init_region_pattern, bddl_text):
         full_region_ref = match.group(1)
-        # The reference might be like "kitchen_table_akita_black_bowl_init_region"
-        # We need to extract just the "akita_black_bowl_init_region" part
-        
-        # Check if it's a direct match first
+        # Direct region match
         if full_region_ref in available_regions:
             continue
-            
-        # Otherwise, try to extract the region name from a composite like "target_regionname"
+        # Composite region (e.g. kitchen_table_akita_black_bowl_init_region)
         found = False
         for region in available_regions:
             if full_region_ref.endswith(region):
                 found = True
                 break
-        
-        if not found:
-            errors.append(f"Region reference '{full_region_ref}' in :init doesn't match any defined region")
+        if found:
+            continue
+        # Object-on-object: second arg is a declared object/fixture (e.g. plate_1 in (On X plate_1))
+        if full_region_ref in all_declared:
+            continue
+        errors.append(f"Region reference '{full_region_ref}' in :init doesn't match any defined region")
     
     if errors:
         print("[VALIDATION ERRORS]")
