@@ -7,17 +7,17 @@
 model: openvla
 task_suite_name: libero_10
 device: cuda:0
-cache_dir: /home/hice1/vkulkarni46/scratch/huggingface
+cache_dir: /home/hice1/apalasamudram6/scratch/huggingface  # Replace with your cache directory
 
 base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
 bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
 base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 prompt: put the black bowl in the bottom drawer of the cabinet and close it
-out_file: /home/hice1/vkulkarni46/scratch/demos/temporal_demo.hdf5
-
+out_file: /home/hice1/apalasamudram6/scratch/demos/temporal_demo.hdf5
+record_path: /home/hice1/apalasamudram6/scratch/vla-explainability/scripts/
 # Recording parameters
 action_scale: 1.0
-num_demos: 2
+num_demos: 1
 noise_std: 0.001
 
 # =============================================================================
@@ -26,11 +26,11 @@ noise_std: 0.001
 # These objects are injected into the BDDL and spawned off-screen at episode
 # start. TemporalPerturbationManager teleports them in/out during the rollout.
 # Only needed if you use "distractor" or "replace" temporal perturbation types.
-hidden_objects:
-  - name: moka_pot_999        # instance name (must be unique in the scene)
-    type: moka_pot             # object type from LIBERO object registry
-  - name: milk_777
-    type: milk
+# hidden_objects:
+#   - name: moka_pot_999        # instance name (must be unique in the scene)
+#     type: moka_pot             # object type from LIBERO object registry
+#   - name: milk_777
+#     type: milk
 
 # =============================================================================
 # Temporal Perturbations (mid-rollout, with revert on window close)
@@ -66,31 +66,31 @@ temporal_perturbations:
 
   # ---- COLOR ----
   # Change akita_black_bowl_1 to red between steps 100–200.
-  - type: color
-    obj_name: akita_black_bowl_1
-    start_step: 100
-    end_step: 200
-    color: red                 # valid: red, blue, green, yellow, purple,
-                               #        orange, cyan, magenta, white, black
-                               # omit for random color
+  # - type: color
+  #   obj_name: akita_black_bowl_1
+  #   start_step: 100
+  #   end_step: 200
+  #   color: red                 # valid: red, blue, green, yellow, purple,
+  #                              #        orange, cyan, magenta, white, black
+  #                              # omit for random color
 
   # ---- DISTRACTOR ----
   # Teleport moka_pot_999 into the scene from steps 120–300.
   # moka_pot_999 must be listed in hidden_objects above.
-  - type: distractor
-    distractor_obj_name: moka_pot_999
-    start_step: 120
-    end_step: 300
-    distractor_xy: [0.10, -0.10]  # (x, y) table-plane coords; omit for random
+  # - type: distractor
+  #   distractor_obj_name: moka_pot_999
+  #   start_step: 120
+  #   end_step: 300
+  #   distractor_xy: [0.10, -0.10]  # (x, y) table-plane coords; omit for random
 
   # ---- REPLACE ----
   # Hide wine_bottle_1 and show milk_777 in its place from steps 180–350.
   # milk_777 must be listed in hidden_objects above.
-  - type: replace
-    obj_name: wine_bottle_1
-    replacement_obj_name: milk_777
-    start_step: 180
-    end_step: 350
+  # - type: replace
+  #   obj_name: wine_bottle_1
+  #   replacement_obj_name: milk_777
+  #   start_step: 180
+  #   end_step: 350
 
 # =============================================================================
 # Spatial (pre-episode) Perturbation Configuration (unchanged from original)
@@ -125,7 +125,7 @@ slurm:
     gpu_type: "V100"
     constraint: null
     blacklisted_nodes: ["atl1-1-01-002-8-0"]
-  conda_env: /home/hice1/vkulkarni46/scratch/envs/xAI
+  conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
   module_load: ["anaconda3/2023.03", "cuda/12.6.1"]
   job_name_prefix: "vla_record"
   poll_interval: 30

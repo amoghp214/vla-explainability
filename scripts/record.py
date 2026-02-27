@@ -78,7 +78,7 @@ from libero.libero.utils.temporal_perturbations import (
     add_hidden_objects_to_bddl,
     specs_from_config,
 )
-from perturbations import read_bddl, validate_bddl
+from libero.libero.utils.generate_perturbation_bddl import read_bddl, validate_bddl, extract_target_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,6 @@ def prepare_bddl_with_hidden_objects(
 
     # Auto-detect workspace if not provided
     if target_workspace is None:
-        from perturbations import extract_target_workspace
         target_workspace = extract_target_workspace(bddl_text)
 
     hidden_pairs = [(obj["name"], obj["type"]) for obj in hidden_objects]
@@ -283,6 +282,7 @@ def record_single_demo(
 
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
+        img.save(f"/home/hice1/apalasamudram6/scratch/vla-explainability/scripts/record_last_step.png")
         prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
         inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
         action = vla.predict_action(**inputs, unnorm_key=config["task_suite_name"], do_sample=False)
@@ -304,6 +304,8 @@ def record_single_demo(
         rewards.append(reward)
         states.append(flat_state)
         obs_list.append({k: np.array(v) for k, v in obs.items() if not k.endswith("image")})
+
+        print(f"  Step {step}/{max_steps}, Reward: {reward:.2f}, Done: {done}, Action: {action}")
 
         step += 1
         if step % 50 == 0 or done:
