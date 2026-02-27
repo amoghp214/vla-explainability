@@ -283,6 +283,7 @@ def record_single_demo(
 
     actions, dones, rewards, states, obs_list = [], [], [], [], []
     frames = []
+    
     # Track which steps had active perturbations for analysis
     perturbation_events: List[Dict[str, Any]] = []
 
