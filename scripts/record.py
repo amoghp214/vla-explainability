@@ -58,17 +58,48 @@ Notes:
 """
 
 import os
+import sys
 import h5py
 import json
 import argparse
 import yaml
 import tempfile
 import numpy as np
+import cv2
 from PIL import Image
 from typing import List, Dict, Any, Optional
 
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
+
+# ---------------------------------------------------------------------------
+# Path setup — mirrors record.py so imports are robust regardless of cwd.
+# See record.py for full explanation.
+# ---------------------------------------------------------------------------
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)
+
+for _p in [_THIS_DIR, _REPO_ROOT]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+_libero_env_path = os.environ.get("LIBERO_PATH")
+if _libero_env_path and _libero_env_path not in sys.path:
+    sys.path.insert(0, _libero_env_path)
+
+try:
+    from libero.libero.envs import OffScreenRenderEnv
+except ModuleNotFoundError as _e:
+    _tried = str(sys.path[:6])
+    _msg = (
+        f"Could not import libero. Tried sys.path: {_tried}\n"
+        "Fix options:\n"
+        "  1. Run from repo root:  cd <repo_root> && python scripts/playback.py --config ...\n"
+        "  2. Install editable:    pip install -e <repo_root>\n"
+        "  3. Set env var:         export LIBERO_PATH=<repo_root>\n"
+        f"Original error: {_e}"
+    )
+    raise ModuleNotFoundError(_msg) from _e
 
 from libero.libero.envs import OffScreenRenderEnv
 
@@ -242,7 +273,8 @@ def record_single_demo(
         "libero_spatial": 220,
         "libero_object": 280,
         "libero_goal": 300,
-        "libero_10": 520,
+        # "libero_10": 520,
+        "libero_10": 200,
         "libero_90": 400,
     }
     max_steps = max_steps_dict.get(config["task_suite_name"], 200)
@@ -250,6 +282,7 @@ def record_single_demo(
     noise_std = config.get("noise_std", 0.0)
 
     actions, dones, rewards, states, obs_list = [], [], [], [], []
+    frames = []
     # Track which steps had active perturbations for analysis
     perturbation_events: List[Dict[str, Any]] = []
 
@@ -282,6 +315,7 @@ def record_single_demo(
 
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
+        frames.append(np.array(img))
         img.save(f"/home/hice1/apalasamudram6/scratch/vla-explainability/scripts/record_last_step.png")
         prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
         inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
@@ -332,8 +366,36 @@ def record_single_demo(
         "states": np.array(states, dtype=np.float32),
         "obs_list": obs_list,
         "perturbation_events": perturbation_events,
+        "frames": frames,
     }
 
+# ---------------------------------------------------------------------------
+# Save demo videos
+# ---------------------------------------------------------------------------
+
+def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -> None:
+    """
+    Save a list of frames as an MP4 video.
+
+    Args:
+        frames: List of (H, W, 3) numpy arrays in uint8 format.
+        output_path: Path to save the video file (e.g., demo_0.mp4).
+        fps: Frames per second (default 20).
+    """
+
+    if not frames:
+        print(f"  ⚠ No frames to save, skipping video.")
+        return
+
+    h, w, _ = frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+
+    for frame in frames:
+        writer.write(frame)
+    writer.release()
+
+    print(f"  ✓ Saved video: {output_path} ({len(frames)} frames)")
 
 # ---------------------------------------------------------------------------
 # Main recording function
@@ -438,6 +500,21 @@ def record_demo(config: Dict[str, Any]):
             )
 
     print(f"✓ Saved {num_demos} demo(s) to {out_file}")
+
+    # ---- Save videos ----
+    record_path = config["record_path"]
+    video_dir = os.path.dirname(record_path)
+    video_base = os.path.splitext(os.path.basename(video_dir))[0]
+
+    print(f"\nSaving {num_demos} video(s)...")
+    for demo_idx, demo_data in enumerate(all_demos):
+        if num_demos == 1:
+            video_path = os.path.join(video_dir, f"{video_base}.mp4")
+        else:
+            video_path = os.path.join(video_dir, f"{video_base}_demo_{demo_idx}.mp4")
+        save_demo_video(demo_data["frames"], video_path, fps=20)
+
+    print("\n✓ Recording and video export complete!")
 
 
 # ---------------------------------------------------------------------------

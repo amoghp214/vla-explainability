@@ -14,7 +14,7 @@ bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_
 base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 prompt: put the black bowl in the bottom drawer of the cabinet and close it
 out_file: /home/hice1/apalasamudram6/scratch/demos/temporal_demo.hdf5
-record_path: /home/hice1/apalasamudram6/scratch/vla-explainability/scripts/
+record_path: /home/hice1/apalasamudram6/scratch/demos/
 # Recording parameters
 action_scale: 1.0
 num_demos: 1
@@ -54,7 +54,8 @@ temporal_perturbations:
     obj_name: akita_black_bowl_1
     start_step: 50
     end_step: 150
-    delta_xy: [0.06, 0.0]     # explicit (dx, dy) in meters; omit for random
+    # delta_xy: [0.06, 0.0]     # explicit (dx, dy) in meters; omit for random
+    delta_xy: [0.0, 0.10] 
     max_move_m: 0.05           # used only when delta_xy is omitted
 
   # Random move with no explicit delta: sampled from ±max_move_m
