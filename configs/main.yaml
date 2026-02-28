@@ -7,7 +7,7 @@
 model: openvla
 task_suite_name: libero_10
 device: cuda:0
-cache_dir: /home/hice1/vkulkarni46/scratch/huggingface  # Replace with your cache directory
+cache_dir: /home/hice1/apalasamudram6/scratch/.hf_cache
 
 # Original BDDL file (will be used as base for perturbations)
 base_bddl_file: libero/libero/bddl_files/libero_90/KITCHEN_SCENE1_put_the_black_bowl_on_the_plate.bddl
@@ -82,7 +82,7 @@ slurm:
                            # Uses SLURM --exclude flag to prevent jobs from running on problematic nodes
   
   # Environment setup
-  conda_env: /home/hice1/vkulkarni46/scratch/envs/xAI # Conda environment name
+  conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
   module_load: ["anaconda3/2023.03", "cuda/12.6.1"]  # List of modules to load (e.g., ["cuda/11.8"])
   
   # Job script template variables
@@ -115,12 +115,12 @@ run_base_dir: null
 # Used by: python scripts/launcher.py --config configs/main.yaml --random-design
 # Generates n_design random (x, z) translation perturbations, runs record jobs,
 # computes VLA metric per point, fits GP and saves heatmap to run_dir.
-# random_design:
-#   n_design: 20
-#   seed: 1
-#   bounds_x: [-0.05, 0.05]   # x translation range (m)
-#   bounds_z: [-0.05, 0.05]   # z translation range (m)
-#   object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
+random_design:
+  n_design: 20
+  seed: 1
+  bounds_x: [-0.05, 0.05]   # x translation range (m)
+  bounds_z: [-0.05, 0.05]   # z translation range (m)
+  object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
 
 # =============================================================================
 # Evaluation Configuration
