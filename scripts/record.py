@@ -227,7 +227,8 @@ def record_demo(config):
         print(f"{'='*60}")
         
         # Use different seed for each demo
-        seed = demo_idx
+        # seed = demo_idx
+        seed = np.random.randint(0, 10000)  # Random seed for each demo
         demo_data = record_single_demo(env, processor, vla, config, demo_idx, seed)
         all_demos.append(demo_data)
     
