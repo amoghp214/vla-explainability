@@ -51,6 +51,9 @@ def calculate_vla_metric(
     success_metric = calculate_success_metric(unperturbed_episode_results, perturbed_episode_results)
     time_metric = calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths)
     trajectory_metric = normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W)
+    # NOTE: This has not yet been incorporated into the actual metric.
+    window_trajectory_metric = calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W=W)
+
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
     return vla_metric
@@ -96,6 +99,67 @@ def calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths
     episode_length_increase = np.abs(average_perturbed_episode_length - average_unperturbed_episode_length) / average_unperturbed_episode_length
     return episode_length_increase
 
+def calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, window_size=50, step_size=10, W=None):
+    """
+    Computes the normalized trajectory difference between perturbed and unperturbed
+    trajectories by calculating the average DTW distance between the trajectories
+    for a specific time frame in a sliding window manner.
+
+    Args:
+        unperturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the unperturbed episodes.
+        perturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the perturbed episodes.
+        controlled_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the controlled episodes.
+        window_size (int): The size of the sliding window to calculate the trajectory difference.
+        step_size (int): The step size for sliding the window.
+        W (np.array): A diagonal matrix or 1d array that represents the weights of the different trajectory dimensions (8D).
+    
+    Returns:
+        float: the average trajectory difference between the unperturbed and perturbed episodes across all windows.
+    """
+    assert window_size > 0, "Window size must be greater than 0."
+    assert step_size > 0, "Step size must be greater than 0."
+    if (window_size < step_size): print("Warning: window size is smaller than step size. The calculations will skip over parts of the trajectory.")
+
+    longest_trajectory_length = max([
+        max([traj.shape[0] for traj in unperturbed_trajectories]),
+        max([traj.shape[0] for traj in perturbed_trajectories]),
+        max([traj.shape[0] for traj in controlled_trajectories])
+    ])
+
+    normalized_trajectory_differences = list()
+
+    for i in range(0, longest_trajectory_length - window_size + step_size, step_size):
+        window_unperturbed_trajectories = [
+            traj[
+                min(i, len(traj) - 1):
+                min(i + window_size, len(traj)), 
+                :
+            ] for traj in unperturbed_trajectories
+        ]
+        window_perturbed_trajectories = [
+            traj[
+                min(i, len(traj) - 1):
+                min(i + window_size, len(traj)), 
+                :
+            ] for traj in perturbed_trajectories
+        ]
+        window_controlled_trajectories = [
+            traj[
+                min(i, len(traj) - 1):
+                min(i + window_size, len(traj)), 
+                :
+            ] for traj in controlled_trajectories
+        ]
+        window_trajectory_difference = normalize_trajectory_difference(
+            window_unperturbed_trajectories,
+            window_perturbed_trajectories,
+            window_controlled_trajectories,
+            W=W
+        )
+        normalized_trajectory_differences.append(window_trajectory_difference)
+    
+    return normalized_trajectory_differences
+
 def normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W=None):
     """
     Computes the log Wasserstein distance between the set of n trials of the unperturbed trajectory and
@@ -104,6 +168,7 @@ def normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajecto
     Args:
         unperturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the unperturbed episodes.
         perturbed_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the perturbed episodes.
+        controlled_trajectories (list): A list of n numpy arrays of shape (*, 8) that contains the trajectories of the controlled episodes.
         W (np.array): A diagonal matrix or 1d array that represents the weights of the different trajectory dimensions (8D)
 
     Returns:
