@@ -163,7 +163,7 @@ class Launcher:
             bounds_x=bounds_x,
             bounds_z=bounds_z,
             model_name="SingleTaskGP",
-            step=0.02,
+            step=0.005,
             project_root=PROJECT_ROOT,
         )
 
