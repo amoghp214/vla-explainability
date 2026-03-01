@@ -29,6 +29,7 @@ Note: To create videos from recorded demos, use playback.py with the same config
 """
 
 import os
+import sys
 import h5py
 import argparse
 import json
@@ -38,6 +39,35 @@ from PIL import Image
 
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
+
+# ---------------------------------------------------------------------------
+# Path setup — mirrors record.py so imports are robust regardless of cwd.
+# See record.py for full explanation.
+# ---------------------------------------------------------------------------
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)
+
+for _p in [_THIS_DIR, _REPO_ROOT]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+_libero_env_path = os.environ.get("LIBERO_PATH")
+if _libero_env_path and _libero_env_path not in sys.path:
+    sys.path.insert(0, _libero_env_path)
+
+try:
+    from libero.libero.envs import OffScreenRenderEnv
+except ModuleNotFoundError as _e:
+    _tried = str(sys.path[:6])
+    _msg = (
+        f"Could not import libero. Tried sys.path: {_tried}\n"
+        "Fix options:\n"
+        "  1. Run from repo root:  cd <repo_root> && python scripts/playback.py --config ...\n"
+        "  2. Install editable:    pip install -e <repo_root>\n"
+        "  3. Set env var:         export LIBERO_PATH=<repo_root>\n"
+        f"Original error: {_e}"
+    )
+    raise ModuleNotFoundError(_msg) from _e
 
 from libero.libero.envs import OffScreenRenderEnv
 
