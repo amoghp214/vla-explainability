@@ -45,14 +45,16 @@ def calculate_vla_metric(
     """
     assert min(w_result, w_time, w_trajectory) >= 0, "Each metric weight must be non-negative."
     assert sum([w_result, w_time, w_trajectory]) != 0, "Metric weights must not sum to 0."
-    
+
     metric_weights = np.array([w_result, w_time, w_trajectory])
     metric_weights = metric_weights / np.linalg.norm(metric_weights)
     success_metric = calculate_success_metric(unperturbed_episode_results, perturbed_episode_results)
     time_metric = calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths)
     trajectory_metric = normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W)
+    
     # NOTE: This has not yet been incorporated into the actual metric.
-    window_trajectory_metric = calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W=W)
+    window_trajectory_metric = calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, window_size=100, step_size=100, W=W)
+    print(f"Windowed trajectory metric: {window_trajectory_metric}")
 
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
@@ -181,8 +183,8 @@ def normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajecto
                                     controlled_trajectories,
                                     W)
     
-    print(f"Perturbed-Unperturbed Trajectory Difference: {perturbed_unperturbed_diff}")
-    print(f"Unperturbed Trajectory Difference: {unperturbed_trajectories_diff}")
+    # print(f"Perturbed-Unperturbed Trajectory Difference: {perturbed_unperturbed_diff}")
+    # print(f"Unperturbed Trajectory Difference: {unperturbed_trajectories_diff}")
 
     return (perturbed_unperturbed_diff - unperturbed_trajectories_diff) / (perturbed_unperturbed_diff + unperturbed_trajectories_diff)
 
@@ -221,11 +223,11 @@ def calculate_trajectory_difference_metric(unperturbed_trajectories, perturbed_t
     n = len(unperturbed_trajectories)
 
     trajectory_distance_matrix = get_dtw_trajectory_distance_matrix(unperturbed_trajectories, perturbed_trajectories, W)
-    print(f"Trajectory distance matrix: {trajectory_distance_matrix}")
-    print(f"Mean Trajectory distance matrix: {np.mean(trajectory_distance_matrix)}")
-    print(f"Median Trajectory distance matrix: {np.median(trajectory_distance_matrix)}")
+    # print(f"Trajectory distance matrix: {trajectory_distance_matrix}")
+    # print(f"Mean Trajectory distance matrix: {np.mean(trajectory_distance_matrix)}")
+    # print(f"Median Trajectory distance matrix: {np.median(trajectory_distance_matrix)}")
     trajectory_wasserstein_distance = calculate_wasserstein_1_dist(trajectory_distance_matrix, n)
-    print(f"Trajectory Wasserstein distance: {trajectory_wasserstein_distance}")
+    # print(f"Trajectory Wasserstein distance: {trajectory_wasserstein_distance}")
     
     # trajectory_difference = np.log(trajectory_wasserstein_distance + 1e-16)
 
