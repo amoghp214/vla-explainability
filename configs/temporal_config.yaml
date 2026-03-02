@@ -55,7 +55,7 @@ temporal_perturbations:
     start_step: 50
     end_step: 150
     delta_xy: [0.06, 0.0]     # explicit (dx, dy) in meters; omit for random
-    # delta_xy: [0.0, 0.10] 
+    # delta_xy: [0.0, 0.10]   # [+ and - is front and back, + and - is left and right]
     max_move_m: 0.05           # used only when delta_xy is omitted
 
   # Random move with no explicit delta: sampled from ±max_move_m
