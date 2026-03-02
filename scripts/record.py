@@ -274,7 +274,7 @@ def record_single_demo(
         "libero_object": 280,
         "libero_goal": 300,
         # "libero_10": 520,
-        "libero_10": 200,
+        "libero_10": 200, # TODO: put this back to 520
         "libero_90": 400,
     }
     max_steps = max_steps_dict.get(config["task_suite_name"], 200)

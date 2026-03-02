@@ -60,7 +60,7 @@ _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 # gripper moved it and we do NOT restore its original position.
 # Default is 0.0 m, meaning ANY positional change counts as robot movement.
 # ---------------------------------------------------------------------------
-ROBOT_MOVE_THRESHOLD_M: float = 0.0
+ROBOT_MOVE_THRESHOLD_M: float = 0.0 # NOTE: may want to have some slack
 
 # Default color palette for color perturbations
 COLOR_PALETTE: Dict[str, np.ndarray] = {
