@@ -18,7 +18,20 @@ Architecture notes:
   - Object positions are set via free-joint qpos (7-DOF: xyz + quaternion).
   - Colors are set via sim.model.geom_rgba (Nx4 float32 array).
   - All original state is snapshotted just before a perturbation window opens
-    and fully restored when the window closes.
+    and fully restored when the window closes — UNLESS the robot gripper moved
+    the object during the perturbation window, in which case the position revert
+    is skipped so the object remains where the robot left it.
+
+Robot-movement detection:
+  - At start_step, alongside the original pose, we also record the
+    perturbation-applied pose (i.e. the pose we explicitly wrote to the sim).
+  - At end_step + 1, we read the object's current pose and compare it to the
+    perturbation-applied pose using a configurable 3-D (XYZ) distance threshold
+    (default: ROBOT_MOVE_THRESHOLD_M = 0.0 m, i.e. any movement counts).
+  - If the current pose differs from the perturbation-applied pose by more than
+    the threshold, we infer that the robot gripper moved the object during the
+    window and skip restoring that object's position (while still reverting
+    colors as normal).  This applies to ALL object types including distractors.
 
 Usage:
     See TemporalPerturbationConfig and TemporalPerturbationManager below.
@@ -39,6 +52,15 @@ import numpy as np
 # ---------------------------------------------------------------------------
 _OFFSCREEN_XYZ = np.array([100.0, 100.0, 100.0], dtype=np.float64)
 _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+# ---------------------------------------------------------------------------
+# Robot-movement detection threshold (metres, full 3-D XYZ distance).
+# If the object's position has shifted more than this from the perturbation-
+# applied pose by the time the window closes, we conclude that the robot
+# gripper moved it and we do NOT restore its original position.
+# Default is 0.0 m, meaning ANY positional change counts as robot movement.
+# ---------------------------------------------------------------------------
+ROBOT_MOVE_THRESHOLD_M: float = 0.0
 
 # Default color palette for color perturbations
 COLOR_PALETTE: Dict[str, np.ndarray] = {
@@ -218,6 +240,42 @@ def _place_object_at_xy(sim, obj_name: str, x: float, y: float,
 
 
 # ---------------------------------------------------------------------------
+# Robot-movement detection helper
+# ---------------------------------------------------------------------------
+
+def _robot_moved_object(
+    current_pose: Optional[np.ndarray],
+    applied_pose: Optional[np.ndarray],
+    threshold_m: float = ROBOT_MOVE_THRESHOLD_M,
+) -> bool:
+    """
+    Return True if the object's current 3-D position differs from the pose that
+    was written by the perturbation engine (applied_pose) by more than
+    threshold_m.  This indicates that the robot gripper displaced the object
+    during the perturbation window, so we should NOT reset it.
+
+    We compare full XYZ distance because any positional change — including
+    being lifted vertically by the gripper — counts as the robot moving
+    the object.
+
+    Args:
+        current_pose  : 7-DOF pose read from sim just before revert (xyz+quat).
+        applied_pose  : 7-DOF pose that the perturbation engine wrote at start_step.
+        threshold_m   : 3-D distance threshold in metres (default: ROBOT_MOVE_THRESHOLD_M).
+
+    Returns:
+        True  → robot moved the object; skip position revert.
+        False → object is still where the engine placed it; safe to revert.
+    """
+    if current_pose is None or applied_pose is None:
+        # Can't tell — conservatively do NOT revert.
+        return True
+
+    xyz_delta = np.linalg.norm(current_pose[:3] - applied_pose[:3])
+    return xyz_delta > threshold_m
+
+
+# ---------------------------------------------------------------------------
 # Perturbation spec dataclass
 # ---------------------------------------------------------------------------
 
@@ -231,6 +289,13 @@ class TemporalPerturbationSpec:
         start_step  : Episode step at which to apply the perturbation (inclusive)
         end_step    : Episode step at which to revert the perturbation (inclusive)
         obj_name    : Primary object to perturb (not needed for distractor)
+        robot_move_threshold_m : 3-D XYZ distance (metres) used to decide whether
+                      the robot moved the object during the window.  If the
+                      object has shifted more than this from the perturbation-
+                      applied pose (in full XYZ), the position revert is skipped.
+                      Default is 0.0 m — any positional change counts as robot
+                      movement.  Applies to all perturbation types including
+                      distractors.
         # move-specific
         delta_xy    : (dx, dy) shift in meters; if None, sampled from max_move_m
         max_move_m  : Max random shift magnitude when delta_xy is None
@@ -248,6 +313,9 @@ class TemporalPerturbationSpec:
 
     # Shared
     obj_name: Optional[str] = None
+
+    # Robot-movement detection threshold (per-spec override)
+    robot_move_threshold_m: float = ROBOT_MOVE_THRESHOLD_M
 
     # move
     delta_xy: Optional[Tuple[float, float]] = None
@@ -285,10 +353,22 @@ class TemporalPerturbationSpec:
 
 @dataclass
 class _PerturbationSnapshot:
-    """Internal: stores original state for a single perturbation so it can be reverted."""
+    """
+    Internal: stores original state for a single perturbation so it can be
+    reverted, plus the pose(s) that the engine itself wrote so we can detect
+    whether the robot moved any object during the window.
+    """
     spec: TemporalPerturbationSpec
-    # Keyed by object name → original 7-DOF pose
+
+    # Keyed by object name → original 7-DOF pose (recorded at start_step,
+    # BEFORE the perturbation is applied).
     original_poses: Dict[str, np.ndarray] = field(default_factory=dict)
+
+    # Keyed by object name → 7-DOF pose WRITTEN by the perturbation engine at
+    # start_step.  Used at end_step to check whether the robot displaced the
+    # object relative to where we placed it.
+    applied_poses: Dict[str, np.ndarray] = field(default_factory=dict)
+
     # Keyed by object name → {geom_id: original_rgba}
     original_colors: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
 
@@ -310,6 +390,18 @@ class TemporalPerturbationManager:
             obs, reward, done, _ = env.step(action)
 
         manager.summary()           # Print a log of what was applied
+
+    Robot-movement detection
+    ------------------------
+    For "move", "replace", and "distractor" perturbation types, the engine
+    records the exact pose it writes at start_step (the "applied pose").  At
+    end_step + 1, before reverting, it reads the object's current pose and
+    computes the full XYZ Euclidean distance from the applied pose.  If that
+    distance exceeds spec.robot_move_threshold_m the object is considered to
+    have been picked up / repositioned by the robot during the perturbation
+    window, and its position is NOT reverted.  The default threshold is 0.0 m,
+    meaning any positional change — including vertical lifting — prevents the
+    revert.  Color reverts are unaffected by this check.
     """
 
     def __init__(self, specs: List[TemporalPerturbationSpec]):
@@ -421,7 +513,7 @@ class TemporalPerturbationManager:
 
     def _apply_move(self, sim, spec: TemporalPerturbationSpec,
                     snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
-        # Snapshot original pose
+        # Snapshot original pose (before perturbation)
         original_pose = _read_object_pose(sim, spec.obj_name)
         if original_pose is None:
             print(f"[TEMPORAL] WARN: Cannot read pose for '{spec.obj_name}'. Skipping move.")
@@ -440,10 +532,14 @@ class TemporalPerturbationManager:
 
         ok = _place_object_at_xy(sim, spec.obj_name, new_x, new_y)
         if ok:
+            # Record the pose the engine just wrote so we can detect robot movement later
+            applied_pose = _read_object_pose(sim, spec.obj_name)
+            snapshot.applied_poses[spec.obj_name] = applied_pose
+
             msg = (f"step {spec.start_step}: MOVE '{spec.obj_name}' "
                    f"by ({dx:+.4f}, {dy:+.4f}) m → "
                    f"({new_x:.4f}, {new_y:.4f}) "
-                   f"[reverts at step {spec.end_step + 1}]")
+                   f"[reverts at step {spec.end_step + 1} unless robot moves object]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
             return snapshot
@@ -464,6 +560,7 @@ class TemporalPerturbationManager:
 
         ok = _write_object_colors(sim, spec.obj_name, rgba)
         if ok:
+            # Color perturbations have no position component; no applied_pose needed.
             msg = (f"step {spec.start_step}: COLOR '{spec.obj_name}' → {color_name} "
                    f"{tuple(rgba)} [reverts at step {spec.end_step + 1}]")
             print(f"[TEMPORAL] {msg}")
@@ -475,7 +572,8 @@ class TemporalPerturbationManager:
                            snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
         dname = spec.distractor_obj_name
         # Snapshot: record that it was parked (pose = off-screen)
-        snapshot.original_poses[dname] = np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT])
+        parked_pose = np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT])
+        snapshot.original_poses[dname] = parked_pose
 
         # Determine target position
         if spec.distractor_xy is not None:
@@ -486,9 +584,13 @@ class TemporalPerturbationManager:
 
         ok = _place_object_at_xy(sim, dname, tx, ty, z_override=0.02)
         if ok:
+            # Record the pose the engine wrote for the distractor
+            applied_pose = _read_object_pose(sim, dname)
+            snapshot.applied_poses[dname] = applied_pose
+
             msg = (f"step {spec.start_step}: DISTRACTOR '{dname}' "
                    f"appears at ({tx:.4f}, {ty:.4f}) "
-                   f"[reverts at step {spec.end_step + 1}]")
+                   f"[reverts at step {spec.end_step + 1} unless robot moves object]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
             return snapshot
@@ -496,7 +598,7 @@ class TemporalPerturbationManager:
 
     def _apply_replace(self, sim, spec: TemporalPerturbationSpec,
                         snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
-        # Snapshot original pose of target
+        # Snapshot original pose of target object (before perturbation)
         original_pose = _read_object_pose(sim, spec.obj_name)
         if original_pose is None:
             print(f"[TEMPORAL] WARN: Cannot read pose for '{spec.obj_name}'. Skipping replace.")
@@ -512,9 +614,13 @@ class TemporalPerturbationManager:
                                   original_pose[0], original_pose[1],
                                   z_override=original_pose[2])
         if ok:
+            # Record the pose written for the replacement object
+            applied_pose = _read_object_pose(sim, spec.replacement_obj_name)
+            snapshot.applied_poses[spec.replacement_obj_name] = applied_pose
+
             msg = (f"step {spec.start_step}: REPLACE '{spec.obj_name}' "
                    f"with '{spec.replacement_obj_name}' "
-                   f"[reverts at step {spec.end_step + 1}]")
+                   f"[reverts at step {spec.end_step + 1} unless robot moves replacement]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
             return snapshot
@@ -525,17 +631,59 @@ class TemporalPerturbationManager:
     # ------------------------------------------------------------------
 
     def _revert(self, sim, spec_idx: int):
+        """
+        Revert a perturbation at the end of its window.
+
+        Position revert logic
+        ---------------------
+        For each object whose pose we would restore, we first check whether the
+        robot moved it during the window.  We do this by comparing the object's
+        *current* 3-D position to the position the engine wrote at start_step
+        (the "applied pose") using a full XYZ Euclidean distance.  If the
+        displacement exceeds spec.robot_move_threshold_m we skip restoring that
+        object's position so the robot's work is preserved.
+
+        This check applies uniformly to ALL object types, including distractors.
+        If the robot picked up and repositioned a distractor during the window,
+        it will remain where the robot left it.
+
+        Color reverts are always applied regardless of robot movement, since a
+        color change is a visual property independent of where the robot placed
+        the object.
+        """
         snapshot = self._snapshots.get(spec_idx)
         if snapshot is None:
             return
         spec = snapshot.spec
 
-        # Restore poses
+        # ---- Restore poses (with robot-movement check) ----
         for obj_name, original_pose in snapshot.original_poses.items():
-            _write_object_pose(sim, obj_name, original_pose)
-            print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT pose of '{obj_name}'")
+            applied_pose = snapshot.applied_poses.get(obj_name)
+            current_pose = _read_object_pose(sim, obj_name)
 
-        # Restore colors
+            # Determine whether to skip position revert.
+            # Robot-movement detection applies to ALL object types uniformly,
+            # including distractors.
+            if _robot_moved_object(
+                current_pose, applied_pose, spec.robot_move_threshold_m
+            ):
+                # Robot moved this object during the window — leave it where it is.
+                if current_pose is not None and applied_pose is not None:
+                    xyz_shift = np.linalg.norm(current_pose[:3] - applied_pose[:3])
+                else:
+                    xyz_shift = float("nan")
+                msg = (f"step {spec.end_step + 1}: SKIP pose revert of '{obj_name}' "
+                       f"(robot moved it {xyz_shift:.4f} m during window "
+                       f"> threshold {spec.robot_move_threshold_m:.4f} m)")
+                print(f"[TEMPORAL] {msg}")
+                self._log.append(msg)
+            else:
+                # Robot did not move the object — restore original pose.
+                _write_object_pose(sim, obj_name, original_pose)
+                print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT pose of '{obj_name}' "
+                      f"(robot did not move object)")
+
+        # ---- Restore colors (always, independent of robot movement) ----
         for obj_name, geom_colors in snapshot.original_colors.items():
             body_name = _find_object_body_name(sim, obj_name)
             if body_name:
@@ -543,7 +691,8 @@ class TemporalPerturbationManager:
                     sim.model.geom_rgba[gid] = rgba
             print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT color of '{obj_name}'")
 
-        msg = f"step {spec.end_step + 1}: REVERTED {spec.pert_type} on '{spec.obj_name or spec.distractor_obj_name}'"
+        msg = (f"step {spec.end_step + 1}: REVERTED {spec.pert_type} "
+               f"on '{spec.obj_name or spec.distractor_obj_name}'")
         self._log.append(msg)
 
     # ------------------------------------------------------------------
@@ -686,32 +835,35 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
             obj_name: akita_black_bowl_1
             start_step: 50
             end_step: 150
-            delta_xy: [0.05, 0.0]    # optional; random if omitted
-            max_move_m: 0.05         # used only when delta_xy is omitted
+            delta_xy: [0.05, 0.0]         # optional; random if omitted
+            max_move_m: 0.05              # used only when delta_xy is omitted
+            robot_move_threshold_m: 0.01  # optional; default 0.0 m (any movement counts)
 
           - type: color
             obj_name: wine_bottle_1
             start_step: 80
             end_step: 200
-            color: red               # optional; random if omitted
+            color: red                    # optional; random if omitted
 
           - type: distractor
             distractor_obj_name: moka_pot_999
             start_step: 100
             end_step: 300
-            distractor_xy: [0.1, -0.1]  # optional; random if omitted
+            distractor_xy: [0.1, -0.1]   # optional; random if omitted
 
           - type: replace
             obj_name: wine_bottle_1
             replacement_obj_name: milk_777
             start_step: 120
             end_step: 250
+            robot_move_threshold_m: 0.02  # optional; default 0.0 m (any movement counts)
     """
     specs = []
     for entry in temporal_config:
         ptype = entry["type"]
         start = entry["start_step"]
         end = entry["end_step"]
+        threshold = entry.get("robot_move_threshold_m", ROBOT_MOVE_THRESHOLD_M)
 
         if ptype == "move":
             delta_xy = tuple(entry["delta_xy"]) if "delta_xy" in entry else None
@@ -722,6 +874,7 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
                 obj_name=entry["obj_name"],
                 delta_xy=delta_xy,
                 max_move_m=entry.get("max_move_m", 0.05),
+                robot_move_threshold_m=threshold,
             ))
 
         elif ptype == "color":
@@ -731,6 +884,7 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
                 end_step=end,
                 obj_name=entry["obj_name"],
                 color=entry.get("color"),
+                # No threshold needed for color-only perturbations
             ))
 
         elif ptype == "distractor":
@@ -741,6 +895,7 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
                 end_step=end,
                 distractor_obj_name=entry["distractor_obj_name"],
                 distractor_xy=dxy,
+                robot_move_threshold_m=threshold,
             ))
 
         elif ptype == "replace":
@@ -750,6 +905,7 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
                 end_step=end,
                 obj_name=entry["obj_name"],
                 replacement_obj_name=entry["replacement_obj_name"],
+                robot_move_threshold_m=threshold,
             ))
 
         else:
