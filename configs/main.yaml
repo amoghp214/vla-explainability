@@ -10,12 +10,14 @@ device: cuda:0
 cache_dir: /home/hice1/apalasamudram6/scratch/.hf_cache
 
 # Original BDDL file (will be used as base for perturbations)
-base_bddl_file: libero/libero/bddl_files/libero_90/KITCHEN_SCENE1_put_the_black_bowl_on_the_plate.bddl
-base_prompt: put the black bowl on the plate
+# base_bddl_file: libero/libero/bddl_files/libero_90/KITCHEN_SCENE1_put_the_black_bowl_on_the_plate.bddl
+# base_prompt: put the black bowl on the plate
+base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
+base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 
 # Recording parameters
 action_scale: 1.0
-num_demos: 2  # Number of demonstrations to record per perturbation
+num_demos: 5  # Number of demonstrations to record per perturbation
 noise_std: 0.001  # Gaussian noise std deviation for action deltas
 
 # =============================================================================
@@ -63,13 +65,13 @@ perturbations:
 # =============================================================================
 slurm:
   # Maximum number of simultaneous jobs
-  max_concurrent_jobs: 4
+  max_concurrent_jobs: 10
   
   # Job parameters
   job_params:
     partition: "coc-gpu"  # Optional - can omit for auto-select
     account: "coc"      # Optional - can omit for default account
-    time: "02:00:00"
+    time: "01:00:00"
     nodes: 1
     ntasks_per_node: 1
     cpus_per_task: 4
@@ -116,10 +118,10 @@ run_base_dir: null
 # Generates n_design random (x, z) translation perturbations, runs record jobs,
 # computes VLA metric per point, fits GP and saves heatmap to run_dir.
 random_design:
-  n_design: 20
+  n_design: 70
   seed: 1
-  bounds_x: [-0.05, 0.05]   # x translation range (m)
-  bounds_z: [-0.05, 0.05]   # z translation range (m)
+  bounds_x: [-0.1, 0.1]   # x translation range (m)
+  bounds_z: [-0.1, 0.1]   # z translation range (m)
   object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
 
 # =============================================================================

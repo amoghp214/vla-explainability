@@ -163,7 +163,7 @@ class Launcher:
             bounds_x=bounds_x,
             bounds_z=bounds_z,
             model_name="SingleTaskGP",
-            step=0.005,
+            step=0.001,
             project_root=PROJECT_ROOT,
         )
 
@@ -178,7 +178,7 @@ class Launcher:
         print(f"Run directory: {self.run_dir}")
         self.generate_perturbations()
         self.dispatch_jobs()
-        self.render_videos()
+        self.render_videos() # NOTE: hide this with a flag
         self.run_evaluation()
         print("\n" + "=" * 80)
         print("Pipeline complete!")

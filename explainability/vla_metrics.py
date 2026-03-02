@@ -53,8 +53,7 @@ def calculate_vla_metric(
     trajectory_metric = normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W)
     
     # NOTE: This has not yet been incorporated into the actual metric.
-    window_trajectory_metric = calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, window_size=100, step_size=100, W=W)
-    print(f"Windowed trajectory metric: {window_trajectory_metric}")
+    # window_trajectory_metric = calculate_normalized_trajectory_difference_sliding_window(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W=W)
 
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
@@ -95,7 +94,7 @@ def calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths
     average_unperturbed_episode_length = torch.mean(unperturbed_episode_lengths.float())
     average_perturbed_episode_length = torch.mean(perturbed_episode_lengths.float())
 
-    ## Q: should numerator & denominator be swapped? --> penalize longer episodes more
+    ## NOTE: Q: should numerator & denominator be swapped? --> penalize longer episodes more
     ## Also if peturbation is such that episode length is 0 then this metric blows up
     # episode_length_increase = average_unperturbed_episode_length / average_perturbed_episode_length
     episode_length_increase = np.abs(average_perturbed_episode_length - average_unperturbed_episode_length) / average_unperturbed_episode_length
