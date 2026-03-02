@@ -92,6 +92,7 @@ class Launcher:
         object_names: List[str],
         seed: int,
         include_control: bool = True,
+        uniform: bool = False,
     ) -> None:
         """Generate random (x, z) translation perturbations for heatmap mode."""
         print("\n[INFO] Generating random-design perturbations (x, z translation)...")
@@ -107,6 +108,7 @@ class Launcher:
             object_names=object_names,
             seed=seed,
             include_control=include_control,
+            uniform=uniform,
         )
         print(f"[INFO] Generated unperturbed + control + {len(self.design_points)} random design points")
         save_perturbation_manifest(self.perturbation_info, self.run_dir)
@@ -193,6 +195,7 @@ class Launcher:
         object_names: List[str],
         seed: int,
         generate_only: bool = False,
+        uniform: bool = False,
     ) -> None:
         """Run random-design pipeline: generate (x,z) perturbations -> dispatch -> evaluate -> heatmap."""
         print("=" * 80)
@@ -207,6 +210,7 @@ class Launcher:
             object_names=object_names,
             seed=seed,
             include_control=True,
+            uniform=uniform,
         )
         if generate_only:
             self._print_random_design_instructions()
@@ -307,6 +311,7 @@ def main() -> None:
         rd_config = config.get("random_design", {})
         n_design = args.n_design if args.n_design is not None else rd_config.get("n_design", 20)
         seed = args.seed if args.seed is not None else rd_config.get("seed", 1)
+        uniform = rd_config.get("uniform", False)
         if args.bounds:
             try:
                 low, high = map(float, args.bounds.split(","))
@@ -344,6 +349,7 @@ def main() -> None:
             object_names=object_names,
             seed=seed,
             generate_only=args.generate_only,
+            uniform=uniform,
         )
         return
 

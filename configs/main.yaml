@@ -17,7 +17,7 @@ base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 
 # Recording parameters
 action_scale: 1.0
-num_demos: 5  # Number of demonstrations to record per perturbation
+num_demos: 10  # Number of demonstrations to record per perturbation
 noise_std: 0.001  # Gaussian noise std deviation for action deltas
 
 # =============================================================================
@@ -65,19 +65,19 @@ perturbations:
 # =============================================================================
 slurm:
   # Maximum number of simultaneous jobs
-  max_concurrent_jobs: 10
+  max_concurrent_jobs: 20
   
   # Job parameters
   job_params:
     partition: "coc-gpu"  # Optional - can omit for auto-select
     account: "coc"      # Optional - can omit for default account
-    time: "01:00:00"
+    time: "02:00:00"
     nodes: 1
     ntasks_per_node: 1
     cpus_per_task: 4
     mem: 16G
     gpus: 1
-    gpu_type: "V100" #TODO: make this more flexible (e.g. allow A100, etc.)
+    # gpu_type: "V100" #TODO: make this more flexible (e.g. allow A100, etc.)
     constraint: null  # Optional: "V100-32GB", "A100-80GB", etc.
     blacklisted_nodes: ["atl1-1-01-002-8-0"]  # Optional: List of node names to exclude from job allocation
                            # Example: ["node001", "node002"] or ["node[001-005]"]
@@ -118,11 +118,12 @@ run_base_dir: null
 # Generates n_design random (x, z) translation perturbations, runs record jobs,
 # computes VLA metric per point, fits GP and saves heatmap to run_dir.
 random_design:
-  n_design: 70
+  n_design: 50
   seed: 1
   bounds_x: [-0.1, 0.1]   # x translation range (m)
   bounds_z: [-0.1, 0.1]   # z translation range (m)
   object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
+  uniform: true
 
 # =============================================================================
 # Evaluation Configuration

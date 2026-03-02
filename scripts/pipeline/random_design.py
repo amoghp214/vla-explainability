@@ -36,6 +36,7 @@ def generate_random_design_perturbations(
     object_names: List[str],
     seed: int,
     include_control: bool = True,
+    uniform: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Generate unperturbed + optional control + n_design random (x, z) move perturbations.
@@ -119,9 +120,24 @@ def generate_random_design_perturbations(
     z_low, z_high = bounds_z
     perturbations = {"move": list(object_names)}
 
+    if (uniform):
+        xz_ratio = (x_high - x_low) / (z_high - z_low)
+        num_points_z_axis = int(np.floor(np.sqrt(n_design / xz_ratio)))
+        num_points_x_axis = int(np.floor(xz_ratio * num_points_z_axis))
+
+        # num_points_per_axis = int(np.floor(np.sqrt(n_design)))
+        uniform_x_values = np.linspace(x_low, x_high, num_points_x_axis)
+        uniform_z_values = np.linspace(z_low, z_high, num_points_z_axis)
+        uniform_xz_pairs = [(x, z) for x in uniform_x_values for z in uniform_z_values]
+        for _ in range(len(uniform_xz_pairs), n_design):
+            uniform_xz_pairs.append((np.random.uniform(x_low, x_high), np.random.uniform(z_low, z_high)))
+    
     for i in range(n_design):
-        x = float(np.random.uniform(x_low, x_high))
-        z = float(np.random.uniform(z_low, z_high))
+        if (uniform):
+            x, z = uniform_xz_pairs[i]
+        else:
+            x = float(np.random.uniform(x_low, x_high))
+            z = float(np.random.uniform(z_low, z_high))
         pert_id = f"rd_{i}"
         spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x, "z": z})
         try:
@@ -193,6 +209,12 @@ def run_heatmap(
             continue
         X_list.append([x, z])
         Y_list.append(r["metric"])
+    
+    # Get results from control perturbation
+    assert "control" in results, "Control results not found in analysis results"
+    assert "metric" in results["control"], "Control metric not found in analysis results"
+    X_list.append([0.0, 0.0])  # Control is at (0, 0) translation
+    Y_list.append(results["control"]["metric"])
 
     if len(X_list) < 2:
         raise ValueError(f"Need at least 2 valid design points for heatmap; got {len(X_list)}")
