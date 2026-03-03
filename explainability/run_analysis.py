@@ -131,7 +131,7 @@ def run_analysis(
             perturbed_lengths = torch.tensor([len(t) for t in perturbed_trajs]).float()
             
             # Calculate metric
-            metric = calculate_vla_metric(
+            metric, success_metric, time_metric, trajectory_metric = calculate_vla_metric(
                 unperturbed_episode_results=unperturbed_results,
                 perturbed_episode_results=perturbed_results,
                 unperturbed_episode_lengths=unperturbed_lengths,
@@ -142,26 +142,6 @@ def run_analysis(
                 w_result=metric_weights['w_result'],
                 w_time=metric_weights['w_time'],
                 w_trajectory=metric_weights['w_trajectory'],
-                W=traj_weights
-            )
-
-            # Calculate success rate
-            success_rate = calculate_success_metric(
-                unperturbed_episode_results=unperturbed_results,
-                perturbed_episode_results=perturbed_results
-            )
-
-            # Calculate time metric
-            time_metric = calculate_time_metric(
-                unperturbed_episode_lengths=unperturbed_lengths,
-                perturbed_episode_lengths=perturbed_lengths
-            )
-
-            # Calculate trajectory difference metric
-            trajectory_metric = normalize_trajectory_difference(
-                unperturbed_trajectories=unperturbed_trajs,
-                perturbed_trajectories=perturbed_trajs,
-                controlled_trajectories=controlled_trajs,
                 W=traj_weights
             )
             
@@ -216,7 +196,7 @@ def run_analysis(
                     print(f"  Warning: Could not generate visualization: {viz_e}")
             
             results[pert_id] = {
-                'success_rate': float(success_rate),
+                'success_metric': float(success_metric),
                 'time_metric': float(time_metric),
                 'trajectory_metric': float(trajectory_metric),
                 'metric': float(metric),
@@ -225,7 +205,7 @@ def run_analysis(
                 'visualization': str(viz_dir / f"{pert_id}_trajectory_diff.html")
             }
 
-            print(f"  Success Rate: {success_rate:.4f}")
+            print(f"  Success Metric: {success_metric:.4f}")
             print(f"  Time Metric: {time_metric:.4f}")
             print(f"  Trajectory Metric: {trajectory_metric:.4f}")
             print(f"  Metric: {metric:.4f}")

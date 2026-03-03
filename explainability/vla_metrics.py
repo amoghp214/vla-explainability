@@ -41,7 +41,7 @@ def calculate_vla_metric(
         W (np.array): A diagonal matrix or 1d array that represents the weights of the different trajectory dimensions (8D)
     
     Returns:
-        float: the VLA metric (-inf, inf) between the unperturbed and perturbed episodes.
+        list[float]: the VLA metric (-inf, inf) between the unperturbed and perturbed episodes along with the other component metrics [success_metric, time_metric, trajectory_metric].
     """
     assert min(w_result, w_time, w_trajectory) >= 0, "Each metric weight must be non-negative."
     assert sum([w_result, w_time, w_trajectory]) != 0, "Metric weights must not sum to 0."
@@ -57,7 +57,7 @@ def calculate_vla_metric(
 
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
-    return vla_metric
+    return [vla_metric, success_metric, time_metric, trajectory_metric]
 
 
 def calculate_success_metric(unperturbed_episode_results, perturbed_episode_results):
