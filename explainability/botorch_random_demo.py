@@ -234,6 +234,7 @@ def plot_heatmap(
     bounds_dict: Dict[str, Tuple[float, float]],
     model: Any,
     train_X_norm: torch.Tensor,
+    train_Y: torch.Tensor,
     title: str,
     step: float = 0.02,
     cmap: str = "RdBu_r",
@@ -291,7 +292,24 @@ def plot_heatmap(
     n_pts = train_X_real.shape[0]
     s = max(1, min(25, 5000 / n_pts))
     alpha = 0.85 if n_pts <= 80 else max(0.2, 1.2 - 0.002 * n_pts)
-    ax.scatter(train_X_real[:, 0], train_X_real[:, 1], c="k", s=s, alpha=alpha)
+    # draw colored points whose facecolor encodes the true metric, with a black edge
+    train_Y = train_Y.detach().cpu().numpy().squeeze()
+    if train_Y.ndim > 1:
+        train_Y = train_Y.reshape(-1)
+    # Plot with colormap representing the true VLA metric and a black outline for each point.
+    ax.scatter(
+        train_X_real[:, 0],
+        train_X_real[:, 1],
+        c=train_Y,
+        cmap=cmap,
+        edgecolors="k",
+        linewidths=0.4,
+        s=s,
+        alpha=alpha,
+        vmin=Z.min(),
+        vmax=Z.max(),
+    )
+    # ax.scatter(train_X_real[:, 0], train_X_real[:, 1], c="k", s=s, alpha=alpha)
 
     return Z
 

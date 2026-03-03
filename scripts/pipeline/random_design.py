@@ -258,6 +258,7 @@ def run_heatmap(
         bounds_dict,
         model,
         train_X_norm,
+        train_Y,
         "VLA metric vs (x, z) translation",
         step=step,
         cmap="RdBu_r",
