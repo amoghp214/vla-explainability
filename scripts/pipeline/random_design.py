@@ -246,9 +246,13 @@ def run_heatmap(
         get_bounds_tensor,
         build_and_fit_model,
         plot_heatmap as plot_heatmap_fn,
+        calculate_rms_error,
     )
 
     model = build_and_fit_model(model_name, train_X_norm, train_Y, d)
+    rmse = calculate_rms_error(model, train_X_norm, train_Y)
+    print(f"[INFO] Fitted {model_name} with RMSE on training data: {rmse:.4f}")
+
     out_path = run_dir / "heatmap_metric_vs_translation.png"
     import matplotlib
     matplotlib.use("Agg")
@@ -259,7 +263,7 @@ def run_heatmap(
         model,
         train_X_norm,
         train_Y,
-        "VLA metric vs (x, z) translation",
+        f"VLA metric vs (x, z) translation - RMSE: {rmse:.4f}",
         step=step,
         cmap="RdBu_r",
         ax=ax,

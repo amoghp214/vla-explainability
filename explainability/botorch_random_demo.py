@@ -198,6 +198,14 @@ def evaluate_blackbox(X: torch.Tensor, fn: Callable) -> torch.Tensor:
     y = np.array([fn(*row) for row in X_np], dtype=np.float64)
     return torch.from_numpy(y).double().unsqueeze(-1)
 
+def calculate_rms_error(model: Any, X: torch.Tensor, Y: torch.Tensor) -> float:
+    """Calculate root mean squared error of model predictions on BO data."""
+    with torch.no_grad():
+        y_pred = model.posterior(X).mean.squeeze(-1)
+        y_true = Y.squeeze(-1)
+        rmse = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
+    return rmse
+
 
 def run_random_design(
     objective_fn: Callable,
