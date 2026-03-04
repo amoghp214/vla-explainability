@@ -310,7 +310,7 @@ def run_heatmap(
         calculate_rms_error,
     )
 
-    model = build_and_fit_model(model_name, train_X_norm, train_Y, d)
+    model = build_and_fit_model(model_name, train_X_norm, train_Y, d, kernel_name="matern0.5")
     rmse = calculate_rms_error(model, train_X_norm, train_Y)
     print(f"[INFO] Fitted {model_name} with RMSE on training data: {rmse:.4f}")
 
