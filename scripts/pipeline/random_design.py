@@ -1,9 +1,9 @@
 """
-Random-design pipeline: generate random (x, z) translation perturbations,
+Random-design pipeline: generate random (x, z) translation or distractor-position perturbations,
 dispatch jobs, run VLA metric as black box, produce heatmap of metric vs x, z.
 
-Uses pipeline modules for BDDL/config generation and SLURM, and run_analysis
-for the scalar metric. Heatmap uses BoTorch GP (same pattern as botorch_random_demo).
+Supports two modes: "move" (translate one object by delta from original) and "distract" (add one
+distractor at (x, z) position). Uses pipeline modules for BDDL/config generation and SLURM.
 """
 
 import json
@@ -34,22 +34,33 @@ def generate_random_design_perturbations(
     n_design: int,
     bounds_x: Tuple[float, float],
     bounds_z: Tuple[float, float],
-    object_names: List[str],
-    seed: int,
+    object_names: Optional[List[str]] = None,
+    seed: int = 1,
     include_control: bool = True,
     uniform: bool = False,
+    design_type: str = "move",
+    distractor_count: int = 1,
+    distractor_object_type: Optional[str] = None,
+    distractor_object_types: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Generate unperturbed + optional control + n_design random (x, z) move perturbations.
-    Samples deltas (dx, dz) in bounds and places the object at (original_center + dx, original_center + dz).
-    design_points store (x, z) as deltas so the heatmap can plot absolute positions (original + delta).
+    Generate unperturbed + optional control + n_design random design points.
+
+    design_type "move": Sample deltas (dx, dz) in bounds; place object at (original_center + dx, dz).
+    design_points store (x, z) as deltas. Requires object_names with exactly one object.
+
+    design_type "distract": Sample (x, z) positions in bounds; add distractor_count distractor(s)
+    at that position. design_points store (x, z) as absolute position. object_names ignored.
+    Use distractor_object_type (single type) or distractor_object_types (list; random choice per point) to set distractor object.
 
     Returns:
         perturbation_info: List of dicts (id, bddl_file, config_file, prompt, ...).
-        design_points: List of dicts (id, x, z) with x, z as deltas (m) from original object center.
+        design_points: List of dicts (id, x, z). For move: deltas; for distract: absolute position.
     """
-    if len(object_names) != 1:
-        raise ValueError("Random design with x/z bounds requires exactly one object in object_names")
+    if design_type not in ("move", "distract"):
+        raise ValueError(f"design_type must be 'move' or 'distract', got {design_type!r}")
+    if design_type == "move" and (not object_names or len(object_names) != 1):
+        raise ValueError("Random design type 'move' requires exactly one object in object_names")
 
     np.random.seed(seed)
     perturbation_info = []
@@ -115,14 +126,19 @@ def generate_random_design_perturbations(
             "description": "Control (no BDDL change)",
         })
 
-    # Random design points: sample deltas (dx, dz) in bounds; place object at (cx+dx, cz+dz)
+    # Random design points
     x_low, x_high = bounds_x
     z_low, z_high = bounds_z
-    perturbations = {"move": list(object_names)}
-    centers = get_object_centers_from_bddl(base_bddl_text, object_names)
-    if object_names[0] not in centers:
-        raise ValueError(f"Object {object_names[0]} not found in base BDDL region map; cannot compute absolute positions.")
-    cx, cz = centers[object_names[0]]
+
+    if design_type == "move":
+        perturbations = {"move": list(object_names)}
+        centers = get_object_centers_from_bddl(base_bddl_text, object_names)
+        if object_names[0] not in centers:
+            raise ValueError(f"Object {object_names[0]} not found in base BDDL region map; cannot compute absolute positions.")
+        cx, cz = centers[object_names[0]]
+    else:
+        # distract: perturbations and spec_dict built per design point
+        perturbations = {"distractor": [None] * distractor_count}
 
     if (uniform):
         xz_ratio = (x_high - x_low) / (z_high - z_low)
@@ -135,7 +151,7 @@ def generate_random_design_perturbations(
         uniform_xz_pairs = [(x, z) for x in uniform_x_values for z in uniform_z_values]
         for _ in range(len(uniform_xz_pairs), n_design):
             uniform_xz_pairs.append((np.random.uniform(x_low, x_high), np.random.uniform(z_low, z_high)))
-    
+
     for i in range(n_design):
         if (uniform):
             x, z = uniform_xz_pairs[i]
@@ -143,9 +159,23 @@ def generate_random_design_perturbations(
             x = float(np.random.uniform(x_low, x_high))
             z = float(np.random.uniform(z_low, z_high))
         pert_id = f"rd_{i}"
-        # Place object at absolute position (original + delta)
-        x_abs, z_abs = cx + x, cz + z
-        spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "z": z_abs})
+
+        if design_type == "move":
+            # Place object at absolute position (original + delta)
+            x_abs, z_abs = cx + x, cz + z
+            spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "z": z_abs})
+            design_x, design_z = x, z  # store deltas for heatmap origin
+            desc_extra = f" [delta=({x:.4f}, {z:.4f})]"
+        else:
+            # Distractor at absolute (x, z); one position repeated for each of distractor_count
+            spec_dict = {"distractor": [[float(x), float(z)]] * distractor_count}
+            if distractor_object_type is not None:
+                spec_dict["distractor_object_type"] = distractor_object_type
+            elif distractor_object_types:
+                spec_dict["distractor_object_type"] = np.random.choice(distractor_object_types).item()
+            design_x, design_z = x, z  # store absolute position (no origin in heatmap)
+            desc_extra = ""
+
         try:
             perturbed_bddl = apply_single_perturbation(
                 copy.deepcopy(base_bddl_text),
@@ -156,7 +186,7 @@ def generate_random_design_perturbations(
                 max_move_m=max_move_m,
             )
         except Exception as e:
-            print(f"[WARN] Random design point {pert_id} (dx={x:.4f}, dz={z:.4f}) failed: {e}")
+            print(f"[WARN] Random design point {pert_id} (x={x:.4f}, z={z:.4f}) failed: {e}")
             continue
         pert_bddl_path = bddl_dir / f"{pert_id}.bddl"
         with open(pert_bddl_path, "w") as f:
@@ -168,17 +198,21 @@ def generate_random_design_perturbations(
         )
         config_path = config_dir / f"{pert_id}.yaml"
         write_record_config(record_config, config_path)
+        if design_type == "move":
+            description = f"Move {object_names[0]} to (x={x_abs:.4f}, z={z_abs:.4f}){desc_extra}"
+        else:
+            description = f"Distractor at (x={x:.4f}, z={z:.4f})"
         perturbation_info.append({
             "id": pert_id,
             "bddl_file": str(pert_bddl_path),
             "config_file": str(config_path),
             "prompt": base_prompt,
-            "type": "random_design_move",
-            "description": f"Move {object_names[0]} to (x={x_abs:.4f}, z={z_abs:.4f}) [delta=({x:.4f}, {z:.4f})]",
-            "x": x,
-            "z": z,
+            "type": "random_design_move" if design_type == "move" else "random_design_distract",
+            "description": description,
+            "x": design_x,
+            "z": design_z,
         })
-        design_points.append({"id": pert_id, "x": x, "z": z})
+        design_points.append({"id": pert_id, "x": design_x, "z": design_z})
 
     return perturbation_info, design_points
 
@@ -194,11 +228,13 @@ def run_heatmap(
     project_root: Optional[Path] = None,
     origin_x: Optional[float] = None,
     origin_z: Optional[float] = None,
+    design_type: str = "move",
 ) -> Path:
     """
     Load analysis results and design points, fit BoTorch GP, plot heatmap of metric vs x, z.
-    If origin_x and origin_z are provided, (x, z) in design_points are treated as deltas and
-    the heatmap plots absolute positions (original + delta). Otherwise (x, z) are plotted as-is.
+    If origin_x and origin_z are provided (move mode), (x, z) are treated as deltas and
+    the heatmap plots absolute positions (original + delta). For distract mode or when origin
+    is not set, (x, z) are plotted as-is. design_type "distract" uses "position" axis labels.
     Saves heatmap to run_dir / "heatmap_metric_vs_translation.png" and returns that path.
     """
     project_root = project_root or PROJECT_ROOT
@@ -286,6 +322,8 @@ def run_heatmap(
     title = "VLA metric vs (x, z) translation - RMSE: {:.4f}".format(rmse)
     if origin_x is not None and origin_z is not None:
         title = "VLA metric vs (x, z) absolute position - RMSE: {:.4f}".format(rmse)
+    elif design_type == "distract":
+        title = "VLA metric vs distractor position (x, z) - RMSE: {:.4f}".format(rmse)
     plot_heatmap_fn(
         bounds_dict,
         model,
@@ -297,6 +335,9 @@ def run_heatmap(
         ax=ax,
     )
     if origin_x is not None and origin_z is not None:
+        ax.set_xlabel("x position (m)")
+        ax.set_ylabel("z position (m)")
+    elif design_type == "distract":
         ax.set_xlabel("x position (m)")
         ax.set_ylabel("z position (m)")
     else:

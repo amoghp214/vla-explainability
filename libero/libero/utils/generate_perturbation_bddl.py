@@ -531,8 +531,12 @@ def replace_object(bddl_text, obj_name, target_workspace=None):
     print(f"[REPLACE] {obj_name} replaced with {new_obj}")
     return bddl_text
 
-def add_distractor(bddl_text, target_workspace=None):
-    """Add a distractor object to the scene."""
+def add_distractor(bddl_text, target_workspace=None, position=None, object_type=None):
+    """Add a distractor object to the scene.
+    If position=(x, z) is provided, place it in a small region around that point (table-plane coords).
+    Otherwise sample random position in [-0.2, 0.2] for both axes.
+    If object_type is provided (str or list), use that type (or random choice from list); otherwise random from valid_objects.
+    """
     # Valid LIBERO object categories (expanded for all scene types)
     valid_objects = [
         "akita_black_bowl",
@@ -553,21 +557,36 @@ def add_distractor(bddl_text, target_workspace=None):
         "moka_pot",
         "chefmate_8_frypan"
     ]
-    
+
     # Auto-detect workspace if not provided
     if target_workspace is None:
         target_workspace = extract_target_workspace(bddl_text)
-    
-    obj_type = random.choice(valid_objects)
+
+    if object_type is not None:
+        if isinstance(object_type, (list, tuple)) and len(object_type) > 0:
+            obj_type = random.choice(object_type)
+        else:
+            obj_type = object_type if isinstance(object_type, str) else random.choice(valid_objects)
+        if obj_type not in valid_objects:
+            raise ValueError(f"Distractor object_type '{obj_type}' not in valid LIBERO objects: {valid_objects}")
+    else:
+        obj_type = random.choice(valid_objects)
     new_obj = f"{obj_type}_{random.randint(100,999)}"
     region_name = f"{new_obj}_init_region"
 
-    # Generate ranges: (x_min, y_min, x_max, y_max)
-    # Ensure x_max >= x_min and y_max >= y_min
-    x_vals = sorted([round(random.uniform(-0.2, 0.2), 3) for _ in range(2)])
-    y_vals = sorted([round(random.uniform(-0.2, 0.2), 3) for _ in range(2)])
-    x_min, x_max = x_vals[0], x_vals[1]
-    y_min, y_max = y_vals[0], y_vals[1]
+    # Generate ranges: (x_min, y_min, x_max, y_max) — table-plane x, z
+    if position is not None:
+        x_center, z_center = position[0], position[1]
+        eps = 0.01  # small region around the point (m)
+        x_min = round(x_center - eps, 3)
+        x_max = round(x_center + eps, 3)
+        y_min = round(z_center - eps, 3)
+        y_max = round(z_center + eps, 3)
+    else:
+        x_vals = sorted([round(random.uniform(-0.2, 0.2), 3) for _ in range(2)])
+        y_vals = sorted([round(random.uniform(-0.2, 0.2), 3) for _ in range(2)])
+        x_min, x_max = x_vals[0], x_vals[1]
+        y_min, y_max = y_vals[0], y_vals[1]
     
     # Format: (x_min, y_min, x_max, y_max)
     ranges_str = f"{x_min} {y_min} {x_max} {y_max}"
@@ -657,7 +676,7 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
         init_object_range_m: Size of init region (m). 0 = use max_init_range_m; >0 = box.
         max_move_m: Max distance (m) from unperturbed center (used when perturbation_spec_dict not provided for move).
         max_init_range_m: Max extent (m) when init_object_range_m <= 0. Set in config YAML.
-        perturbation_spec_dict: Optional spec dict, e.g. {"move": {obj_name: [x, z], ...}}. When provided for move, uses these centers instead of random.
+        perturbation_spec_dict: Optional spec dict, e.g. {"move": {obj_name: [x, z], ...}}. When provided for move, uses these centers instead of random. For distractor, can be {"distractor": [[x1, z1], [x2, z2], ...]} to place each distractor at the given (x, z) table-plane position.
 
     Returns:
         Modified BDDL text
@@ -700,8 +719,17 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0, max_m
                 obj_region_map = parse_object_region_map(bddl_text, region_blocks)
 
     if "distractor" in perturbations:
-        for _ in perturbations["distractor"]:
-            bddl_text = add_distractor(bddl_text, target_workspace)
+        distractor_positions = None
+        distractor_object_type = None
+        if perturbation_spec_dict and "distractor" in perturbation_spec_dict:
+            distractor_positions = perturbation_spec_dict["distractor"]
+        if perturbation_spec_dict:
+            distractor_object_type = perturbation_spec_dict.get("distractor_object_type") or perturbation_spec_dict.get("distractor_object_types")
+        for i, _ in enumerate(perturbations["distractor"]):
+            pos = None
+            if distractor_positions is not None and i < len(distractor_positions):
+                pos = tuple(distractor_positions[i])
+            bddl_text = add_distractor(bddl_text, target_workspace, position=pos, object_type=distractor_object_type)
 
     # Ensure every region in the scene has minimal extent (all objects, not just perturbed ones)
     bddl_text = fix_init_ranges(bddl_text, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m)
