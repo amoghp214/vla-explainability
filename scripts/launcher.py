@@ -45,8 +45,11 @@ if perturbation_utils_path.exists():
     fix_init_ranges = getattr(pert_utils, 'fix_init_ranges', lambda t, **kw: t)
     generate_move_spec_dict = getattr(pert_utils, 'generate_move_spec_dict', lambda *a, **k: {})
     apply_perturbations_kitchen = pert_utils.apply_perturbations_kitchen
-    apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)  # Use generic if available
+    apply_perturbations = getattr(pert_utils, 'apply_perturbations', pert_utils.apply_perturbations_kitchen)
     validate_bddl = pert_utils.validate_bddl
+    # resolve_z_overrides: present in updated bddl_perturbation; graceful fallback
+    # for older versions that don't have it yet.
+    resolve_z_overrides = getattr(pert_utils, 'resolve_z_overrides', None)
 else:
     raise ImportError(f"Could not find perturbation utilities at {perturbation_utils_path}")
 
@@ -125,23 +128,24 @@ class Launcher:
         # Read base BDDL
         base_bddl_text = read_bddl(str(base_bddl))
         
-        # Apply init range to all regions (max_init_range_m from config when init is "exact"; MuJoCo needs size > 0)
+        # Apply init range to all regions
         pert_config = self.config.get('perturbations', {})
         bddl_spatial = pert_config.get('bddl_spatial', {})
         init_object_range_m = self.config.get('init_object_range_m', bddl_spatial.get('init_object_range_m', 0.0))
         max_init_range_m = bddl_spatial.get('max_init_range_m', 0.001)
         base_bddl_text = fix_init_ranges(base_bddl_text, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m)
         
-        # Copy base BDDL (unperturbed) with all regions having minimal extent
+        # Copy base BDDL (unperturbed)
         unperturbed_bddl_path = self.bddl_dir / "unperturbed.bddl"
         with open(unperturbed_bddl_path, 'w') as f:
             f.write(base_bddl_text)
         
-        # Create unperturbed config
+        # Create unperturbed config (no z_overrides for the baseline)
         unperturbed_config = self._create_record_config(
             perturbation_id="unperturbed",
             bddl_file=str(unperturbed_bddl_path),
-            prompt=self.config['base_prompt']
+            prompt=self.config['base_prompt'],
+            z_overrides_file=None,
         )
         unperturbed_config_path = self.config_dir / "unperturbed.yaml"
         with open(unperturbed_config_path, 'w') as f:
@@ -153,7 +157,8 @@ class Launcher:
             'config_file': str(unperturbed_config_path),
             'prompt': self.config['base_prompt'],
             'type': 'baseline',
-            'description': 'Baseline unperturbed task'
+            'description': 'Baseline unperturbed task',
+            'z_overrides_file': None,
         })
         
         # Generate perturbed versions
@@ -164,13 +169,13 @@ class Launcher:
         
         if 'bddl_spatial' in pert_types:
             pert_id = self._generate_bddl_spatial_perturbations(
-                base_bddl_text, pert_id, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m
+                base_bddl_text, pert_id,
+                init_object_range_m=init_object_range_m,
+                max_init_range_m=max_init_range_m,
             )
         
         if 'language' in pert_types:
-            pert_id = self._generate_language_perturbations(
-                base_bddl_text, pert_id
-            )
+            pert_id = self._generate_language_perturbations(base_bddl_text, pert_id)
         
         print(f"[INFO] Generated {len(self.perturbation_info)} perturbation files")
         
@@ -179,7 +184,13 @@ class Launcher:
         with open(manifest_path, 'w') as f:
             json.dump(self.perturbation_info, f, indent=2)
     
-    def _generate_bddl_spatial_perturbations(self, base_bddl_text: str, start_id: int, init_object_range_m: float = 0.0, max_init_range_m: float = 0.001) -> int:
+    def _generate_bddl_spatial_perturbations(
+        self,
+        base_bddl_text: str,
+        start_id: int,
+        init_object_range_m: float = 0.0,
+        max_init_range_m: float = 0.001,
+    ) -> int:
         """Generate BDDL spatial perturbations."""
         pert_config = self.config['perturbations']['bddl_spatial']
         specs = pert_config.get('perturbation_specs', [])
@@ -197,36 +208,32 @@ class Launcher:
             
             if pert_type == 'distractor':
                 count = spec.get('count', 1)
-                perturbations['distractor'] = [None] * count  # List of None values for distractor count
+                perturbations['distractor'] = [None] * count
             elif pert_type == 'control':
-                # No actual perturbation, but we can still generate a config for control condition
-                pert_id_copy = pert_id  # Use same ID for control condition
-                pert_id = "control"  # Use a special ID for control condition
+                pert_id_copy = pert_id
+                pert_id = "control"
             else:
                 objects = spec.get('objects', [])
                 if pert_type not in perturbations:
                     perturbations[pert_type] = []
                 perturbations[pert_type].extend(objects)
             
-            # Build perturbation_spec_dict in code (one per file). For move: generate centers; control/others: None.
+            # Build perturbation_spec_dict for move perturbations
             perturbation_spec_dict = None
             if pert_type == 'move':
                 objects = spec.get('objects', [])
                 perturbation_spec_dict = generate_move_spec_dict(
                     base_bddl_text, objects, max_move_m=spec_max_move_m
                 )
-                # Example of what a perturbation_spec_dict might look like
-                # perturbation_spec_dict = {
-                #     "move": {
-                #         "akita_black_bowl_1": [0.08, -0.1]
-                #     }
-                # }
-                
-            # control, reorient, color, replace, distractor: no spec dict
 
-            # Apply perturbations (use generic function for all scene types)
             try:
-                perturbed_bddl = apply_perturbations(
+                # ----------------------------------------------------------------
+                # apply_perturbations returns (bddl_text, z_overrides).
+                # z_overrides is a dict {obj_name: sentinel_or_stack_tuple} that
+                # records any collision-driven Z adjustments needed after
+                # env.reset().  It is empty when no collisions were detected.
+                # ----------------------------------------------------------------
+                perturbed_bddl, z_overrides = apply_perturbations(
                     copy.deepcopy(base_bddl_text),
                     perturbations,
                     init_object_range_m=init_object_range_m,
@@ -235,7 +242,7 @@ class Launcher:
                     perturbation_spec_dict=perturbation_spec_dict,
                 )
                 
-                # Validate
+                # Validate BDDL structure
                 if not validate_bddl(perturbed_bddl):
                     print(f"[WARN] Perturbation {pert_id} failed validation, skipping")
                     continue
@@ -244,18 +251,37 @@ class Launcher:
                 pert_bddl_path = self.bddl_dir / f"perturbed_{pert_id}.bddl"
                 with open(pert_bddl_path, 'w') as f:
                     f.write(perturbed_bddl)
+
+                # ----------------------------------------------------------
+                # Persist z_overrides as a JSON sidecar alongside the BDDL.
+                # record.py will load this after env.reset() and call
+                # resolve_z_overrides(sim, z_overrides) to get the final
+                # (cx, cy, z) for each object that needs a height correction.
+                # ----------------------------------------------------------
+                z_overrides_file = None
+                if z_overrides:
+                    z_overrides_path = self.bddl_dir / f"perturbed_{pert_id}_z_overrides.json"
+                    with open(z_overrides_path, 'w') as f:
+                        # Tuples are not JSON-serialisable directly; convert to lists.
+                        json.dump(
+                            {k: list(v) for k, v in z_overrides.items()},
+                            f, indent=2,
+                        )
+                    z_overrides_file = str(z_overrides_path)
+                    print(f"[INFO] Saved z_overrides for {pert_id} → {z_overrides_path}")
                 
-                # Create config
-                pert_config_path = self._create_record_config(
+                # Create per-perturbation record config
+                pert_record_config = self._create_record_config(
                     perturbation_id=f"perturbed_{pert_id}",
                     bddl_file=str(pert_bddl_path),
-                    prompt=self.config['base_prompt']  # Keep same prompt for spatial
+                    prompt=self.config['base_prompt'],
+                    z_overrides_file=z_overrides_file,
                 )
                 config_path = self.config_dir / f"perturbed_{pert_id}.yaml"
                 with open(config_path, 'w') as f:
-                    yaml.dump(pert_config_path, f)
+                    yaml.dump(pert_record_config, f)
                 
-                # Generate description
+                # Build human-readable description
                 if pert_type == 'distractor':
                     count = spec.get('count', 1)
                     description = f"Added {count} distractor object(s) to the scene"
@@ -265,11 +291,10 @@ class Launcher:
                         'move': 'moved',
                         'reorient': 'reoriented',
                         'color': 'changed color of',
-                        'replace': 'replaced'
+                        'replace': 'replaced',
                     }
                     action = pert_type_names.get(pert_type, pert_type)
-                    obj_list = ', '.join(objects)
-                    description = f"{action.capitalize()} {obj_list}"
+                    description = f"{action.capitalize()} {', '.join(objects)}"
                 
                 self.perturbation_info.append({
                     'id': f'perturbed_{pert_id}',
@@ -278,47 +303,47 @@ class Launcher:
                     'prompt': self.config['base_prompt'],
                     'type': f'bddl_spatial_{pert_type}',
                     'perturbations': perturbations,
-                    'description': description
+                    'description': description,
+                    'z_overrides_file': z_overrides_file,
                 })
                 
                 if pert_id == "control":
-                    pert_id = pert_id_copy  # Reset to original ID for next perturbation
+                    pert_id = pert_id_copy
                 else:
                     pert_id += 1
                 
             except Exception as e:
                 print(f"[ERROR] Failed to generate perturbation {pert_id}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         return pert_id
     
     def _generate_language_perturbations(self, base_bddl_text: str, start_id: int) -> int:
         """Generate language perturbations."""
-        # Import language perturbation generator
         sys.path.insert(0, str(project_root / "explainability" / "perturbations" / "language"))
         from generate_perturbations import generate_perturbations
         
         pert_id = start_id
         base_prompt = self.config['base_prompt']
         
-        # Generate all language perturbations
         pert_dict = generate_perturbations(base_prompt)
         
         for pert_name, pert_prompt in pert_dict.items():
-            # Use same BDDL file (no spatial changes)
-            pert_bddl_path = self.bddl_dir / "unperturbed.bddl"  # Same as baseline
+            # Language perturbations use the unperturbed BDDL — no z_overrides
+            pert_bddl_path = self.bddl_dir / "unperturbed.bddl"
             
-            # Create config with perturbed prompt
             pert_config = self._create_record_config(
                 perturbation_id=f"perturbed_{pert_id}",
                 bddl_file=str(pert_bddl_path),
-                prompt=pert_prompt
+                prompt=pert_prompt,
+                z_overrides_file=None,
             )
             config_path = self.config_dir / f"perturbed_{pert_id}.yaml"
             with open(config_path, 'w') as f:
                 yaml.dump(pert_config, f)
             
-            # Generate description for language perturbation
             pert_descriptions = {
                 'keyboard': 'Keyboard typo',
                 'ocr': 'OCR error simulation',
@@ -333,10 +358,9 @@ class Launcher:
                 'paraphrase1': 'Paraphrase variant 1',
                 'paraphrase2': 'Paraphrase variant 2',
                 'paraphrase3': 'Paraphrase variant 3',
-                'paraphrase4': 'Paraphrase variant 4'
+                'paraphrase4': 'Paraphrase variant 4',
             }
             
-            # Handle word deletion variants
             if pert_name.startswith('wd_all_'):
                 idx = pert_name.split('_')[-1]
                 description = f'Word deletion (removed word at position {idx})'
@@ -350,24 +374,41 @@ class Launcher:
                 'prompt': pert_prompt,
                 'type': f'language_{pert_name}',
                 'original_prompt': base_prompt,
-                'description': description
+                'description': description,
+                'z_overrides_file': None,
             })
             
             pert_id += 1
         
         return pert_id
     
-    def _create_record_config(self, perturbation_id: str, bddl_file: str, prompt: str) -> Dict:
-        """Create a record config YAML for a perturbation."""
-        # Make paths absolute
+    def _create_record_config(
+        self,
+        perturbation_id: str,
+        bddl_file: str,
+        prompt: str,
+        z_overrides_file: Optional[str] = None,
+    ) -> Dict:
+        """
+        Create a record config YAML for a perturbation.
+
+        Args:
+            perturbation_id : Unique string ID for this perturbation.
+            bddl_file       : Absolute path to the BDDL file to use.
+            prompt          : Language prompt for the task.
+            z_overrides_file: Path to the JSON sidecar produced by
+                              apply_perturbations() that contains collision-
+                              driven Z corrections.  None when no collisions
+                              were detected (most cases).  record.py reads this
+                              after env.reset() and calls resolve_z_overrides()
+                              to apply the correct object heights.
+        """
         bddl_path = Path(bddl_file)
         if not bddl_path.is_absolute():
             bddl_path = self.bddl_dir / bddl_path.name
         
-        # Output file path
         out_file = self.results_dir / f"{perturbation_id}.hdf5"
         
-        # Videos directory for playback
         videos_dir = self.results_dir / "videos"
         videos_dir.mkdir(exist_ok=True)
         
@@ -383,6 +424,9 @@ class Launcher:
             'action_scale': self.config.get('action_scale', 1.0),
             'num_demos': self.config.get('num_demos', 1),
             'noise_std': self.config.get('noise_std', 0.0),
+            # Path to JSON sidecar with collision Z corrections.
+            # None (written as null in YAML) when no collisions were detected.
+            'z_overrides_file': z_overrides_file,
         }
         
         return config
@@ -394,7 +438,6 @@ class Launcher:
         slurm_config = self.config['slurm']
         job_params = slurm_config['job_params']
         
-        # Build job script
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={slurm_config['job_name_prefix']}_{perturbation_id}
 #SBATCH --account={job_params['account']}
@@ -404,65 +447,41 @@ class Launcher:
 #SBATCH --cpus-per-task={job_params['cpus_per_task']}
 """
         
-        # Add partition if specified (optional for PACE-ICE)
         if job_params.get('partition'):
             script_content += f"#SBATCH --partition={job_params['partition']}\n"
         
-        # Add memory specification
         if job_params.get('mem'):
             script_content += f"#SBATCH --mem={job_params['mem']}\n"
         
-        # Add GPU specification (PACE-ICE format: --gres=gpu:<type>:<number>)
         if job_params.get('gpus', 0) > 0:
             gpu_type = job_params.get('gpu_type', 'V100')
             num_gpus = job_params['gpus']
             script_content += f"#SBATCH --gres=gpu:{gpu_type}:{num_gpus}\n"
         
-        # Add constraint if specified (for specific GPU models)
         if job_params.get('constraint'):
             script_content += f"#SBATCH -C {job_params['constraint']}\n"
             
-        # Add blacklisted nodes if specified
         blacklisted_nodes = job_params.get('blacklisted_nodes', [])
         if blacklisted_nodes:
-            # Convert list to comma-separated string
-            if isinstance(blacklisted_nodes, list):
-                node_list = ','.join(str(node) for node in blacklisted_nodes)
-            else:
-                node_list = str(blacklisted_nodes)
+            node_list = ','.join(str(n) for n in blacklisted_nodes) \
+                if isinstance(blacklisted_nodes, list) else str(blacklisted_nodes)
             script_content += f"#SBATCH --exclude={node_list}\n"
         
-        # Add output files
         script_content += f"""#SBATCH --output={self.logs_dir}/{perturbation_id}_%j.out
 #SBATCH --error={self.logs_dir}/{perturbation_id}_%j.err
 
-# Change to submission directory
 cd $SLURM_SUBMIT_DIR
 
-# Load modules if specified
 """
         
         for module in slurm_config.get('module_load', []):
             script_content += f"module load {module}\n"
         
         script_content += f"""
-# Initialize conda (try common locations)
-# if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-#     source $HOME/miniconda3/etc/profile.d/conda.sh
-# elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-#     source $HOME/anaconda3/etc/profile.d/conda.sh
-# elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
-#     source /opt/conda/etc/profile.d/conda.sh
-# fi
-
-# Activate conda environment
 conda activate {slurm_config['conda_env']}
 
-# Change to project directory
 cd {project_root}
 
-# Install/update package in editable mode
-# Try to import first - if it fails, install. If install fails, the job should fail.
 if ! python -c "import libero" 2>/dev/null; then
     echo "Installing libero package..."
     pip install -e . || {{ echo "ERROR: Failed to install libero package"; exit 1; }}
@@ -470,7 +489,6 @@ else
     echo "libero package already installed, skipping installation"
 fi
 
-# Run record script
 python scripts/record.py --config {config_file}
 
 echo "Job completed: {perturbation_id}"
@@ -480,7 +498,6 @@ echo "Job completed: {perturbation_id}"
             f.write(script_content)
         
         os.chmod(job_script, 0o755)
-        
         return str(job_script)
     
     def submit_job(self, job_script: str) -> Optional[str]:
@@ -488,13 +505,9 @@ echo "Job completed: {perturbation_id}"
         try:
             result = subprocess.run(
                 ['sbatch', job_script],
-                capture_output=True,
-                text=True,
-                check=True
+                capture_output=True, text=True, check=True,
             )
-            # Extract job ID from output: "Submitted batch job 12345"
-            job_id = result.stdout.strip().split()[-1]
-            return job_id
+            return result.stdout.strip().split()[-1]
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] Failed to submit job {job_script}: {e.stderr}")
             return None
@@ -504,18 +517,11 @@ echo "Job completed: {perturbation_id}"
         try:
             result = subprocess.run(
                 ['squeue', '-j', job_id, '-h', '-o', '%T'],
-                capture_output=True,
-                text=True,
-                check=True
+                capture_output=True, text=True, check=True,
             )
             status = result.stdout.strip()
-            if not status:
-                # Job not in queue, check if it completed successfully
-                # Check if output file exists
-                return "COMPLETED"
-            return status
+            return status if status else "COMPLETED"
         except subprocess.CalledProcessError:
-            # Job might have finished
             return "COMPLETED"
     
     def dispatch_jobs(self):
@@ -524,7 +530,6 @@ echo "Job completed: {perturbation_id}"
         
         max_concurrent = self.config['slurm']['max_concurrent_jobs']
         
-        # Create job scripts for all perturbations
         job_scripts = {}
         for pert_info in self.perturbation_info:
             pert_id = pert_info['id']
@@ -536,29 +541,23 @@ echo "Job completed: {perturbation_id}"
         print(f"[INFO] Created {len(job_scripts)} job scripts")
         print(f"[INFO] Max concurrent jobs: {max_concurrent}")
         
-        # Dispatch jobs
         while self.pending_jobs or self.running_jobs:
-            # Check status of running jobs
             for pert_id in list(self.running_jobs):
                 job_id = self.job_status.get(pert_id)
                 if job_id:
                     status = self.check_job_status(job_id)
                     if status == "COMPLETED":
-                        # Check if output file exists
-                        pert_info = next(p for p in self.perturbation_info if p['id'] == pert_id)
                         out_file = Path(self.results_dir / f"{pert_id}.hdf5")
                         if out_file.exists():
                             print(f"[INFO] Job {pert_id} completed successfully")
                             self.running_jobs.remove(pert_id)
                             self.completed_jobs.append(pert_id)
-                            del self.job_status[pert_id]
                         else:
                             print(f"[WARN] Job {pert_id} completed but output file missing")
                             self.running_jobs.remove(pert_id)
                             self.failed_jobs.append(pert_id)
-                            del self.job_status[pert_id]
+                        del self.job_status[pert_id]
             
-            # Submit new jobs if we have capacity
             while len(self.running_jobs) < max_concurrent and self.pending_jobs:
                 pert_id = self.pending_jobs.pop(0)
                 job_script = job_scripts[pert_id]
@@ -572,7 +571,6 @@ echo "Job completed: {perturbation_id}"
                     print(f"[ERROR] Failed to submit job {pert_id}")
                     self.failed_jobs.append(pert_id)
             
-            # Wait before next check
             if self.running_jobs:
                 time.sleep(self.config['slurm']['poll_interval'])
         
@@ -580,14 +578,12 @@ echo "Job completed: {perturbation_id}"
         print(f"  Completed: {len(self.completed_jobs)}")
         print(f"  Failed: {len(self.failed_jobs)}")
         
-        # Save job summary
-        summary = {
-            'completed': self.completed_jobs,
-            'failed': self.failed_jobs,
-            'total': len(self.perturbation_info)
-        }
         with open(self.run_dir / "job_summary.json", 'w') as f:
-            json.dump(summary, f, indent=2)
+            json.dump({
+                'completed': self.completed_jobs,
+                'failed': self.failed_jobs,
+                'total': len(self.perturbation_info),
+            }, f, indent=2)
     
     def render_videos(self):
         """Render videos for all completed recordings using playback.py."""
@@ -595,51 +591,28 @@ echo "Job completed: {perturbation_id}"
         
         videos_dir = self.results_dir / "videos"
         videos_dir.mkdir(exist_ok=True)
-        
         rendered_count = 0
         
-        # Render unperturbed video
-        unperturbed_hdf5 = self.results_dir / "unperturbed.hdf5"
-        if unperturbed_hdf5.exists():
-            unperturbed_config = self.config_dir / "unperturbed.yaml"
-            if unperturbed_config.exists():
-                print(f"[INFO] Rendering unperturbed video...")
-                try:
-                    cmd = [
-                        sys.executable,
-                        str(project_root / "scripts" / "playback.py"),
-                        "--config", str(unperturbed_config)
-                    ]
-                    subprocess.run(cmd, check=True, capture_output=True)
-                    output_video = videos_dir / "unperturbed.mp4"
-                    print(f"  ✓ Rendered: {output_video}")
-                    rendered_count += 1
-                except subprocess.CalledProcessError as e:
-                    print(f"  ✗ Failed to render unperturbed video: {e}")
+        all_items = [{'id': 'unperturbed', 'config_file': str(self.config_dir / 'unperturbed.yaml')}] \
+                    + [p for p in self.perturbation_info if p['id'] != 'unperturbed']
         
-        # Render perturbed videos
-        for pert_info in self.perturbation_info:
-            if pert_info['id'] == 'unperturbed':
+        for item in all_items:
+            pert_id = item['id']
+            hdf5 = self.results_dir / f"{pert_id}.hdf5"
+            cfg = Path(item['config_file'])
+            if not hdf5.exists() or not cfg.exists():
                 continue
-            
-            pert_id = pert_info['id']
-            pert_hdf5 = self.results_dir / f"{pert_id}.hdf5"
-            pert_config = Path(pert_info['config_file'])
-            
-            if pert_hdf5.exists() and pert_config.exists():
-                print(f"[INFO] Rendering {pert_id} video...")
-                try:
-                    cmd = [
-                        sys.executable,
-                        str(project_root / "scripts" / "playback.py"),
-                        "--config", str(pert_config)
-                    ]
-                    subprocess.run(cmd, check=True, capture_output=True)
-                    output_video = videos_dir / f"{pert_id}.mp4"
-                    print(f"  ✓ Rendered: {output_video}")
-                    rendered_count += 1
-                except subprocess.CalledProcessError as e:
-                    print(f"  ✗ Failed to render {pert_id} video: {e}")
+            print(f"[INFO] Rendering {pert_id}...")
+            try:
+                subprocess.run(
+                    [sys.executable, str(project_root / "scripts" / "playback.py"),
+                     "--config", str(cfg)],
+                    check=True, capture_output=True,
+                )
+                print(f"  ✓ {videos_dir / f'{pert_id}.mp4'}")
+                rendered_count += 1
+            except subprocess.CalledProcessError as e:
+                print(f"  ✗ Failed: {e}")
         
         print(f"\n[INFO] Rendered {rendered_count} video(s) to {videos_dir}")
     
@@ -652,19 +625,17 @@ echo "Job completed: {perturbation_id}"
         
         print("\n[INFO] Running evaluation...")
         
-        # Find unperturbed file
         unperturbed_file = self.results_dir / "unperturbed.hdf5"
         if not unperturbed_file.exists():
             print("[ERROR] Unperturbed file not found, cannot run evaluation")
             return
         
-        # Find all perturbed files
-        perturbed_files = []
-        for pert_info in self.perturbation_info:
-            if pert_info['id'] != 'unperturbed':
-                pert_file = self.results_dir / f"{pert_info['id']}.hdf5"
-                if pert_file.exists():
-                    perturbed_files.append(str(pert_file))
+        perturbed_files = [
+            str(self.results_dir / f"{p['id']}.hdf5")
+            for p in self.perturbation_info
+            if p['id'] != 'unperturbed'
+            and (self.results_dir / f"{p['id']}.hdf5").exists()
+        ]
         
         if not perturbed_files:
             print("[WARN] No perturbed files found for evaluation")
@@ -673,53 +644,39 @@ echo "Job completed: {perturbation_id}"
         env = os.environ.copy()
         env['PYTHONPATH'] = str(project_root) + ":" + env.get('PYTHONPATH', '')
         
-        # Convert to JSON if needed
         if 'json' in eval_config.get('output_formats', []):
             json_output = self.results_dir / "trajectories.json"
-            
-            # Use hdf5_to_json utility
             cmd = [
                 sys.executable,
                 str(project_root / "utils" / "hdf5_to_json.py"),
-                str(unperturbed_file),
-                "-p"
-            ] + perturbed_files + [
-                "-o",
-                str(json_output)
-            ]
-            
+                str(unperturbed_file), "-p",
+            ] + perturbed_files + ["-o", str(json_output)]
             print(f"[INFO] Converting to JSON: {json_output}")
             subprocess.run(cmd, check=True, env=env)
         
-        # Run analysis using episodic_explanation functions
         self._run_analysis(unperturbed_file, perturbed_files, eval_config)
     
     def _run_analysis(self, unperturbed_file: Path, perturbed_files: List[str], eval_config: Dict):
         """Run analysis using episodic_explanation and vla_metrics."""
         print("[INFO] Running trajectory analysis...")
         
-        # Import analysis module
         analysis_module_path = project_root / "explainability" / "run_analysis.py"
         if not analysis_module_path.exists():
             raise FileNotFoundError(f"Analysis module not found at {analysis_module_path}")
         
-        # Prepare output file
         output_file = self.run_dir / "analysis_results.json"
         
-        # Build command to run analysis
         cmd = [
-            sys.executable,
-            str(analysis_module_path),
+            sys.executable, str(analysis_module_path),
             "--unperturbed", str(unperturbed_file),
-            "--perturbed"
+            "--perturbed",
         ] + [str(p) for p in perturbed_files] + [
             "--output", str(output_file),
             "--metric-weights", json.dumps(eval_config['metric_weights']),
             "--trajectory-weights", json.dumps(eval_config['trajectory_weights']),
-            "--project-root", str(project_root)
+            "--project-root", str(project_root),
         ]
         
-        # Run analysis
         subprocess.run(cmd, check=True)
     
     def run(self, generate_only: bool = False):
@@ -734,20 +691,14 @@ echo "Job completed: {perturbation_id}"
         print("=" * 80)
         print(f"Run directory: {self.run_dir}")
         
-        # Step 1: Generate perturbations
         self.generate_perturbations()
         
         if generate_only:
             self._print_local_recording_instructions()
             return
         
-        # Step 2: Dispatch jobs
         self.dispatch_jobs()
-        
-        # Step 3: Render videos
         self.render_videos()
-        
-        # Step 4: Run evaluation
         self.run_evaluation()
         
         print("\n" + "=" * 80)
@@ -778,23 +729,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Launch pipelined perturbed dataset generation"
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to main.yaml configuration file"
-    )
-    parser.add_argument(
-        "--generate-only",
-        action="store_true",
-        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local tryouts."
-    )
-    parser.add_argument(
-        "--run-dir",
-        type=str,
-        default=None,
-        help="Override run directory (e.g. ./local_run). Useful with --generate-only for local step-by-step runs."
-    )
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to main.yaml configuration file")
+    parser.add_argument("--generate-only", action="store_true",
+                        help="Only generate perturbation files. Do not submit SLURM jobs.")
+    parser.add_argument("--run-dir", type=str, default=None,
+                        help="Override run directory (e.g. ./local_run).")
     
     args = parser.parse_args()
     
@@ -804,4 +744,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -33,14 +33,26 @@ Robot-movement detection:
     window and skip restoring that object's position (while still reverting
     colors as normal).  This applies to ALL object types including distractors.
 
-Usage:
-    See TemporalPerturbationConfig and TemporalPerturbationManager below.
-    Example at bottom of file.
+Collision detection & resolution:
+  - All perturbations only move objects in the XY table plane.  Z is never
+    changed by the perturbation itself.
+  - Before placing an object the engine checks every other scene object for XY
+    overlap (distance < sum of approximate radii derived from geom sizes).
+  - Special case — open articulated cavities (drawers, cabinet doors):
+      If a fixture body whose articulated joint is open (angle > OPEN_JOINT_THRESHOLD_RAD)
+      overlaps the target XY, the perturbed object is placed INSIDE that cavity
+      (at the cavity's XY centre and Z centre) rather than on the table surface.
+      This correctly handles e.g. an open drawer that a plate would otherwise
+      clip into — the plate is placed in the drawer.
+  - If NO open cavity matches but plain object collisions exist, the perturbed
+    object is stacked on top of the highest collider:
+        z_final = collider_z + collider_half_height + perturbed_half_height + Z_STACK_GAP_M
+    where Z_STACK_GAP_M is a tiny buffer (default 2 mm) so objects don't clip.
+  - If there are no collisions the original Z is preserved unchanged.
 """
 
 from __future__ import annotations
 
-import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -55,12 +67,21 @@ _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
 # ---------------------------------------------------------------------------
 # Robot-movement detection threshold (metres, full 3-D XYZ distance).
-# If the object's position has shifted more than this from the perturbation-
-# applied pose by the time the window closes, we conclude that the robot
-# gripper moved it and we do NOT restore its original position.
-# Default is 0.0 m, meaning ANY positional change counts as robot movement.
 # ---------------------------------------------------------------------------
-ROBOT_MOVE_THRESHOLD_M: float = 0.0 # NOTE: may want to have some slack
+ROBOT_MOVE_THRESHOLD_M: float = 0.0
+
+# ---------------------------------------------------------------------------
+# Collision resolution constants
+# ---------------------------------------------------------------------------
+
+# Small vertical buffer (m) added between the stacked objects so they do not
+# clip through each other.  This is the ONLY Z adjustment made — it is purely
+# a physics separation buffer, not a configurable perturbation dimension.
+Z_STACK_GAP_M: float = 0.002  # 2 mm
+
+# A hinge/slide joint whose position (radians or metres) exceeds this value is
+# treated as "open" for the purposes of the drawer-placement heuristic.
+OPEN_JOINT_THRESHOLD_RAD: float = 0.05
 
 # Default color palette for color perturbations
 COLOR_PALETTE: Dict[str, np.ndarray] = {
@@ -82,7 +103,6 @@ COLOR_PALETTE: Dict[str, np.ndarray] = {
 # ---------------------------------------------------------------------------
 
 def _get_body_id(sim, body_name: str) -> int:
-    """Return MuJoCo body id for a named body, or -1 if not found."""
     try:
         return sim.model.body_name2id(body_name)
     except Exception:
@@ -90,7 +110,6 @@ def _get_body_id(sim, body_name: str) -> int:
 
 
 def _get_joint_id(sim, joint_name: str) -> int:
-    """Return MuJoCo joint id for a named joint, or -1 if not found."""
     try:
         return sim.model.joint_name2id(joint_name)
     except Exception:
@@ -98,30 +117,13 @@ def _get_joint_id(sim, joint_name: str) -> int:
 
 
 def _get_geom_ids_for_body(sim, body_id: int) -> List[int]:
-    """Return all geom ids attached to a given body."""
-    geom_ids = []
-    for geom_id in range(sim.model.ngeom):
-        if sim.model.geom_bodyid[geom_id] == body_id:
-            geom_ids.append(geom_id)
-    return geom_ids
+    return [g for g in range(sim.model.ngeom) if sim.model.geom_bodyid[g] == body_id]
 
 
 def _find_object_body_name(sim, obj_name: str) -> Optional[str]:
-    """
-    Try to find the MuJoCo body name corresponding to a LIBERO object name.
-    LIBERO typically names bodies as '{obj_name}_main' or just '{obj_name}'.
-    Returns the body name string, or None if not found.
-    """
-    candidates = [
-        obj_name,
-        f"{obj_name}_main",
-        f"{obj_name}_base",
-        f"{obj_name}_body",
-    ]
-    for name in candidates:
-        if _get_body_id(sim, name) >= 0:
-            return name
-    # Fuzzy: scan all body names for obj_name as substring
+    for candidate in (obj_name, f"{obj_name}_main", f"{obj_name}_base", f"{obj_name}_body"):
+        if _get_body_id(sim, candidate) >= 0:
+            return candidate
     for i in range(sim.model.nbody):
         bname = sim.model.body_id2name(i)
         if obj_name in bname:
@@ -130,36 +132,18 @@ def _find_object_body_name(sim, obj_name: str) -> Optional[str]:
 
 
 def _get_free_joint_qpos_addr(sim, obj_name: str) -> Optional[Tuple[int, str]]:
-    """
-    Return (qpos_addr, joint_name) for the free joint of a LIBERO object.
-    LIBERO objects with free joints are named '{obj_name}_joint0' or similar.
-    Returns None if no free joint found.
-    """
-    free_joint_candidates = [
-        f"{obj_name}_joint0",
-        f"{obj_name}_freejoint",
-        f"{obj_name}:joint",
-        obj_name,
-    ]
-    for jname in free_joint_candidates:
+    for jname in (f"{obj_name}_joint0", f"{obj_name}_freejoint", f"{obj_name}:joint", obj_name):
         jid = _get_joint_id(sim, jname)
-        if jid >= 0:
-            jtype = sim.model.jnt_type[jid]
-            # MuJoCo joint type 0 = free joint
-            if jtype == 0:
-                addr = sim.model.jnt_qposadr[jid]
-                return addr, jname
-    # Broader search: scan all joints
+        if jid >= 0 and sim.model.jnt_type[jid] == 0:
+            return sim.model.jnt_qposadr[jid], jname
     for jid in range(sim.model.njnt):
         jname = sim.model.joint_id2name(jid)
         if obj_name in jname and sim.model.jnt_type[jid] == 0:
-            addr = sim.model.jnt_qposadr[jid]
-            return addr, jname
+            return sim.model.jnt_qposadr[jid], jname
     return None
 
 
 def _read_object_pose(sim, obj_name: str) -> Optional[np.ndarray]:
-    """Read the current 7-DOF pose (xyz + quat) of a free-jointed object."""
     result = _get_free_joint_qpos_addr(sim, obj_name)
     if result is None:
         return None
@@ -168,18 +152,12 @@ def _read_object_pose(sim, obj_name: str) -> Optional[np.ndarray]:
 
 
 def _write_object_pose(sim, obj_name: str, pose: np.ndarray) -> bool:
-    """
-    Write a 7-DOF pose (xyz + quat wxyz) to the free joint of an object.
-    Calls sim.forward() to propagate kinematics.
-    Returns True on success.
-    """
     result = _get_free_joint_qpos_addr(sim, obj_name)
     if result is None:
         print(f"[TEMPORAL] WARN: No free joint found for '{obj_name}'. Cannot set pose.")
         return False
     addr, jname = result
     sim.data.qpos[addr: addr + 7] = pose
-    # Zero out velocities for this joint to avoid ghost forces
     vel_addr = sim.model.jnt_dofadr[sim.model.joint_name2id(jname)]
     sim.data.qvel[vel_addr: vel_addr + 6] = 0.0
     sim.forward()
@@ -187,7 +165,6 @@ def _write_object_pose(sim, obj_name: str, pose: np.ndarray) -> bool:
 
 
 def _read_object_colors(sim, obj_name: str) -> Optional[Dict[int, np.ndarray]]:
-    """Read RGBA of all geoms belonging to an object body. Returns {geom_id: rgba}."""
     body_name = _find_object_body_name(sim, obj_name)
     if body_name is None:
         return None
@@ -199,7 +176,6 @@ def _read_object_colors(sim, obj_name: str) -> Optional[Dict[int, np.ndarray]]:
 
 
 def _write_object_colors(sim, obj_name: str, rgba: np.ndarray) -> bool:
-    """Set all geoms of an object body to the given RGBA color."""
     body_name = _find_object_body_name(sim, obj_name)
     if body_name is None:
         print(f"[TEMPORAL] WARN: Body not found for '{obj_name}'. Cannot set color.")
@@ -215,32 +191,261 @@ def _write_object_colors(sim, obj_name: str, rgba: np.ndarray) -> bool:
 
 
 def _park_object(sim, obj_name: str) -> bool:
-    """Teleport an object to the off-screen parking position."""
-    pose = np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT])
-    return _write_object_pose(sim, obj_name, pose)
+    return _write_object_pose(sim, obj_name, np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT]))
 
 
-def _place_object_at_xy(sim, obj_name: str, x: float, y: float,
-                         z_override: Optional[float] = None) -> bool:
+def _place_object_at_xyz(sim, obj_name: str, x: float, y: float, z: float) -> bool:
     """
-    Teleport an object to table-plane coordinates (x, y).
-    Preserves current z unless z_override is provided.
+    Teleport an object to explicit (x, y, z) world coordinates.
     Preserves current quaternion orientation.
     """
     current_pose = _read_object_pose(sim, obj_name)
-    if current_pose is None:
-        # Object was parked — use a default z slightly above table
-        z = z_override if z_override is not None else 0.02
-        quat = _IDENTITY_QUAT
-    else:
-        z = z_override if z_override is not None else current_pose[2]
-        quat = current_pose[3:7]
-    new_pose = np.array([x, y, z, *quat], dtype=np.float64)
-    return _write_object_pose(sim, obj_name, new_pose)
+    quat = current_pose[3:7] if current_pose is not None else _IDENTITY_QUAT
+    return _write_object_pose(sim, obj_name, np.array([x, y, z, *quat], dtype=np.float64))
 
 
 # ---------------------------------------------------------------------------
-# Robot-movement detection helper
+# Geometry helpers — XY radius and Z half-height from geom sizes
+# ---------------------------------------------------------------------------
+
+def _geom_xy_radius(gtype: int, sz: np.ndarray) -> float:
+    """Approximate XY footprint radius of a single geom."""
+    # MuJoCo geom types: 2=sphere, 3=capsule, 4=ellipsoid, 5=cylinder, 6=box, 7=mesh
+    if gtype == 2:   return float(sz[0])                          # sphere
+    if gtype == 3:   return float(sz[0])                          # capsule radius
+    if gtype == 5:   return float(sz[0])                          # cylinder radius
+    if gtype == 6:   return float(np.sqrt(sz[0]**2 + sz[1]**2))  # box diagonal
+    return float(np.max(sz[:3]))                                   # mesh / other
+
+
+def _geom_z_half_height(gtype: int, sz: np.ndarray) -> float:
+    """Approximate Z half-extent of a single geom (how tall above its centre)."""
+    if gtype == 2:   return float(sz[0])           # sphere radius
+    if gtype == 3:   return float(sz[0] + sz[1])   # capsule radius + half-length
+    if gtype == 5:   return float(sz[1])            # cylinder half-length
+    if gtype == 6:   return float(sz[2])            # box Z half-extent
+    return float(np.max(sz[:3]))
+
+
+def _object_xy_radius(sim, obj_name: str) -> float:
+    body_name = _find_object_body_name(sim, obj_name)
+    if body_name is None:
+        return 0.05
+    body_id = _get_body_id(sim, body_name)
+    geom_ids = _get_geom_ids_for_body(sim, body_id)
+    if not geom_ids:
+        return 0.05
+    return max((_geom_xy_radius(sim.model.geom_type[g], sim.model.geom_size[g])
+                for g in geom_ids), default=0.05)
+
+
+def _object_z_half_height(sim, obj_name: str) -> float:
+    body_name = _find_object_body_name(sim, obj_name)
+    if body_name is None:
+        return 0.05
+    body_id = _get_body_id(sim, body_name)
+    geom_ids = _get_geom_ids_for_body(sim, body_id)
+    if not geom_ids:
+        return 0.05
+    return max((_geom_z_half_height(sim.model.geom_type[g], sim.model.geom_size[g])
+                for g in geom_ids), default=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Scene object enumeration (movable, on-table objects only)
+# ---------------------------------------------------------------------------
+
+def _get_all_scene_objects(sim, exclude_names: Optional[List[str]] = None) -> List[str]:
+    """
+    Return names of all free-jointed (movable) objects currently on the table.
+    Objects parked off-screen (|xyz| > 50 m) are excluded.
+    """
+    exclude = set(exclude_names or [])
+    scene_objects: List[str] = []
+    for jid in range(sim.model.njnt):
+        if sim.model.jnt_type[jid] != 0:
+            continue
+        jname = sim.model.joint_id2name(jid)
+        obj_name = jname
+        for suffix in ("_joint0", "_freejoint", ":joint"):
+            if obj_name.endswith(suffix):
+                obj_name = obj_name[: -len(suffix)]
+                break
+        if obj_name in exclude:
+            continue
+        addr = sim.model.jnt_qposadr[jid]
+        if np.max(np.abs(sim.data.qpos[addr: addr + 3])) > 50.0:
+            continue
+        scene_objects.append(obj_name)
+    return scene_objects
+
+
+# ---------------------------------------------------------------------------
+# Open articulated cavity detection (drawers, cabinet doors)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _CavityInfo:
+    """Describes an open articulated cavity (drawer/door) in the scene."""
+    body_name: str          # MuJoCo body name of the cavity interior
+    centre_xyz: np.ndarray  # World-frame XYZ centre of the cavity (3,)
+    xy_radius: float        # Approximate XY radius of the cavity opening
+    z_half: float           # Half-height of the cavity interior
+
+
+def _find_open_cavities(sim) -> List[_CavityInfo]:
+    """
+    Scan all non-free (hinge/slide) joints in the sim for articulated bodies
+    that are currently open (joint position > OPEN_JOINT_THRESHOLD_RAD).
+
+    For each open joint, compute the world-frame AABB of all geoms attached to
+    that body and return a _CavityInfo describing the accessible interior volume.
+
+    This handles open drawers and open cabinet doors generically.
+    """
+    cavities: List[_CavityInfo] = []
+
+    for jid in range(sim.model.njnt):
+        jtype = sim.model.jnt_type[jid]
+        # Type 1 = hinge, type 2 = slide
+        if jtype not in (1, 2):
+            continue
+
+        qpos_addr = sim.model.jnt_qposadr[jid]
+        joint_pos = sim.data.qpos[qpos_addr]
+
+        if abs(joint_pos) <= OPEN_JOINT_THRESHOLD_RAD:
+            continue
+
+        # The body that moves when this joint opens
+        body_id = sim.model.jnt_bodyid[jid]
+        body_name = sim.model.body_id2name(body_id)
+        geom_ids = _get_geom_ids_for_body(sim, body_id)
+        if not geom_ids:
+            continue
+
+        # Compute world-frame positions of all geom centres for this body
+        geom_positions = []
+        for gid in geom_ids:
+            # sim.data.geom_xpos gives world position of each geom centre
+            geom_positions.append(sim.data.geom_xpos[gid].copy())
+
+        if not geom_positions:
+            continue
+
+        positions = np.array(geom_positions)
+        centre_xyz = positions.mean(axis=0)
+
+        # XY radius: max distance of any geom centre from the body XY centre
+        xy_dists = np.sqrt((positions[:, 0] - centre_xyz[0])**2
+                           + (positions[:, 1] - centre_xyz[1])**2)
+        # Add the radius of the largest geom as a buffer
+        geom_radii = [_geom_xy_radius(sim.model.geom_type[g], sim.model.geom_size[g])
+                      for g in geom_ids]
+        xy_radius = float(np.max(xy_dists) + np.max(geom_radii))
+
+        # Z half-height: half the total span of geom centres in Z
+        z_half = float((positions[:, 2].max() - positions[:, 2].min()) / 2 + 0.01)
+
+        cavities.append(_CavityInfo(
+            body_name=body_name,
+            centre_xyz=centre_xyz,
+            xy_radius=xy_radius,
+            z_half=z_half,
+        ))
+
+    return cavities
+
+
+# ---------------------------------------------------------------------------
+# Core collision resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_placement(
+    sim,
+    perturbed_obj: str,
+    target_x: float,
+    target_y: float,
+    original_z: float,
+) -> Tuple[float, float, float, str]:
+    """
+    Determine the final (x, y, z) at which to place *perturbed_obj* given
+    its intended table-plane target (target_x, target_y).
+
+    Resolution priority
+    -------------------
+    1. Check open articulated cavities (drawers/doors) whose XY footprint
+       overlaps the target.  If one is found, place the object INSIDE the
+       cavity at (cavity_centre_x, cavity_centre_y, cavity_centre_z).
+       The object goes into the drawer rather than on top of the chest.
+
+    2. Check all free-jointed scene objects for XY overlap.  If any are found,
+       stack the perturbed object on top of the highest one:
+           z_final = collider_z + collider_z_half + perturbed_z_half + Z_STACK_GAP_M
+
+    3. No collision → keep target_x, target_y, original_z unchanged.
+
+    Returns:
+        (final_x, final_y, final_z, reason_string)
+        reason_string is one of "no_collision", "placed_in_cavity:<body>",
+        "stacked_above:<obj1,obj2,...>".
+    """
+    perturbed_radius = _object_xy_radius(sim, perturbed_obj)
+    perturbed_z_half = _object_z_half_height(sim, perturbed_obj)
+
+    # ------------------------------------------------------------------
+    # 1. Open cavity check (drawers / cabinet doors)
+    # ------------------------------------------------------------------
+    cavities = _find_open_cavities(sim)
+    for cavity in cavities:
+        cx, cy = cavity.centre_xyz[0], cavity.centre_xyz[1]
+        xy_dist = np.sqrt((target_x - cx)**2 + (target_y - cy)**2)
+        if xy_dist < cavity.xy_radius:
+            # Place the object at the cavity's XY centre and Z centre
+            final_z = float(cavity.centre_xyz[2])
+            reason = f"placed_in_cavity:{cavity.body_name}"
+            print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps open cavity "
+                  f"'{cavity.body_name}'. Placing inside cavity at "
+                  f"({cx:.4f}, {cy:.4f}, {final_z:.4f}).")
+            return cx, cy, final_z, reason
+
+    # ------------------------------------------------------------------
+    # 2. Free-jointed object collision check → stack on top
+    # ------------------------------------------------------------------
+    scene_objects = _get_all_scene_objects(sim, exclude_names=[perturbed_obj])
+    colliders: List[str] = []
+    highest_top_z = original_z  # will be updated if colliders found
+
+    for other in scene_objects:
+        other_pose = _read_object_pose(sim, other)
+        if other_pose is None:
+            continue
+        other_radius = _object_xy_radius(sim, other)
+        xy_dist = np.sqrt((target_x - other_pose[0])**2 + (target_y - other_pose[1])**2)
+        if xy_dist < perturbed_radius + other_radius:
+            colliders.append(other)
+            other_z_half = _object_z_half_height(sim, other)
+            top_z = other_pose[2] + other_z_half
+            if top_z > highest_top_z:
+                highest_top_z = top_z
+
+    if colliders:
+        # Stack perturbed object so its BOTTOM sits at the top of the highest collider
+        final_z = highest_top_z + perturbed_z_half + Z_STACK_GAP_M
+        reason = f"stacked_above:{','.join(colliders)}"
+        print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps {colliders} at "
+              f"({target_x:.4f}, {target_y:.4f}). "
+              f"Stacking on top → z={final_z:.4f} m.")
+        return target_x, target_y, final_z, reason
+
+    # ------------------------------------------------------------------
+    # 3. No collision
+    # ------------------------------------------------------------------
+    return target_x, target_y, original_z, "no_collision"
+
+
+# ---------------------------------------------------------------------------
+# Robot-movement detection
 # ---------------------------------------------------------------------------
 
 def _robot_moved_object(
@@ -248,35 +453,13 @@ def _robot_moved_object(
     applied_pose: Optional[np.ndarray],
     threshold_m: float = ROBOT_MOVE_THRESHOLD_M,
 ) -> bool:
-    """
-    Return True if the object's current 3-D position differs from the pose that
-    was written by the perturbation engine (applied_pose) by more than
-    threshold_m.  This indicates that the robot gripper displaced the object
-    during the perturbation window, so we should NOT reset it.
-
-    We compare full XYZ distance because any positional change — including
-    being lifted vertically by the gripper — counts as the robot moving
-    the object.
-
-    Args:
-        current_pose  : 7-DOF pose read from sim just before revert (xyz+quat).
-        applied_pose  : 7-DOF pose that the perturbation engine wrote at start_step.
-        threshold_m   : 3-D distance threshold in metres (default: ROBOT_MOVE_THRESHOLD_M).
-
-    Returns:
-        True  → robot moved the object; skip position revert.
-        False → object is still where the engine placed it; safe to revert.
-    """
     if current_pose is None or applied_pose is None:
-        # Can't tell — conservatively do NOT revert.
         return True
-
-    xyz_delta = np.linalg.norm(current_pose[:3] - applied_pose[:3])
-    return xyz_delta > threshold_m
+    return float(np.linalg.norm(current_pose[:3] - applied_pose[:3])) > threshold_m
 
 
 # ---------------------------------------------------------------------------
-# Perturbation spec dataclass
+# Perturbation spec
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -284,37 +467,39 @@ class TemporalPerturbationSpec:
     """
     Defines a single time-windowed perturbation.
 
-    Fields:
-        pert_type   : One of "move", "color", "distractor", "replace"
-        start_step  : Episode step at which to apply the perturbation (inclusive)
-        end_step    : Episode step at which to revert the perturbation (inclusive)
-        obj_name    : Primary object to perturb (not needed for distractor)
-        robot_move_threshold_m : 3-D XYZ distance (metres) used to decide whether
-                      the robot moved the object during the window.  If the
-                      object has shifted more than this from the perturbation-
-                      applied pose (in full XYZ), the position revert is skipped.
-                      Default is 0.0 m — any positional change counts as robot
-                      movement.  Applies to all perturbation types including
-                      distractors.
-        # move-specific
-        delta_xy    : (dx, dy) shift in meters; if None, sampled from max_move_m
-        max_move_m  : Max random shift magnitude when delta_xy is None
-        # color-specific
-        color       : Color name from COLOR_PALETTE, or None to pick randomly
-        # distractor-specific
-        distractor_obj_name : Name of pre-loaded distractor object in sim
-        distractor_xy       : (x, y) where distractor appears; random if None
-        # replace-specific
-        replacement_obj_name: Name of pre-loaded replacement object in sim
+    Fields
+    ------
+    pert_type   : "move" | "color" | "distractor" | "replace"
+    start_step  : Episode step at which to apply the perturbation (inclusive).
+    end_step    : Episode step at which to revert the perturbation (inclusive).
+    obj_name    : Primary object to perturb (not needed for distractor).
+    robot_move_threshold_m :
+        3-D XYZ distance (m) threshold for robot-movement detection.
+        Default 0.0 m — any positional change counts as robot movement.
+
+    move-specific
+    -------------
+    delta_xy    : (dx, dy) shift in metres; if None sampled from ±max_move_m.
+    max_move_m  : Maximum random shift magnitude when delta_xy is None.
+
+    color-specific
+    --------------
+    color       : Color name from COLOR_PALETTE, or None for a random pick.
+
+    distractor-specific
+    -------------------
+    distractor_obj_name : Pre-loaded distractor object name in sim.
+    distractor_xy       : (x, y) table-plane coords; random if None.
+
+    replace-specific
+    ----------------
+    replacement_obj_name : Pre-loaded replacement object name in sim.
     """
-    pert_type: str  # "move" | "color" | "distractor" | "replace"
+    pert_type: str
     start_step: int
     end_step: int
 
-    # Shared
     obj_name: Optional[str] = None
-
-    # Robot-movement detection threshold (per-spec override)
     robot_move_threshold_m: float = ROBOT_MOVE_THRESHOLD_M
 
     # move
@@ -332,44 +517,28 @@ class TemporalPerturbationSpec:
     replacement_obj_name: Optional[str] = None
 
     def validate(self):
-        assert self.end_step >= self.start_step, \
-            f"end_step ({self.end_step}) must be >= start_step ({self.start_step})"
+        assert self.end_step >= self.start_step
         assert self.pert_type in ("move", "color", "distractor", "replace"), \
             f"Unknown pert_type: {self.pert_type}"
         if self.pert_type in ("move", "color", "replace"):
             assert self.obj_name, f"obj_name required for pert_type='{self.pert_type}'"
         if self.pert_type == "distractor":
-            assert self.distractor_obj_name, "distractor_obj_name required for pert_type='distractor'"
+            assert self.distractor_obj_name, "distractor_obj_name required"
         if self.pert_type == "replace":
-            assert self.replacement_obj_name, "replacement_obj_name required for pert_type='replace'"
+            assert self.replacement_obj_name, "replacement_obj_name required"
         if self.color is not None:
-            assert self.color in COLOR_PALETTE, \
-                f"Unknown color '{self.color}'. Valid: {list(COLOR_PALETTE.keys())}"
+            assert self.color in COLOR_PALETTE, f"Unknown color '{self.color}'"
 
 
 # ---------------------------------------------------------------------------
-# Snapshot: captures all state needed to fully revert a perturbation
+# Internal snapshot
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _PerturbationSnapshot:
-    """
-    Internal: stores original state for a single perturbation so it can be
-    reverted, plus the pose(s) that the engine itself wrote so we can detect
-    whether the robot moved any object during the window.
-    """
     spec: TemporalPerturbationSpec
-
-    # Keyed by object name → original 7-DOF pose (recorded at start_step,
-    # BEFORE the perturbation is applied).
     original_poses: Dict[str, np.ndarray] = field(default_factory=dict)
-
-    # Keyed by object name → 7-DOF pose WRITTEN by the perturbation engine at
-    # start_step.  Used at end_step to check whether the robot displaced the
-    # object relative to where we placed it.
     applied_poses: Dict[str, np.ndarray] = field(default_factory=dict)
-
-    # Keyed by object name → {geom_id: original_rgba}
     original_colors: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
 
 
@@ -381,99 +550,84 @@ class TemporalPerturbationManager:
     """
     Manages time-windowed perturbations for a single episode rollout.
 
-    Usage:
+    Usage
+    -----
         manager = TemporalPerturbationManager(specs)
-        manager.reset(env)          # Call once after env.reset()
+        manager.reset(env)
 
         for step in range(max_steps):
-            manager.step(env, step) # Call once per step, BEFORE env.step()
+            manager.step(env, step)
             obs, reward, done, _ = env.step(action)
 
-        manager.summary()           # Print a log of what was applied
+        manager.summary()
+
+    Collision resolution
+    --------------------
+    Before placing any object the engine calls _resolve_placement() which:
+
+    1. Checks open articulated cavities (drawers/cabinet doors).  If the target
+       XY overlaps an open cavity, the object is placed INSIDE it (e.g. a plate
+       ends up in an open drawer rather than clipping through it or on top of
+       the whole chest).
+
+    2. Otherwise checks all other free-jointed scene objects.  If any overlap
+       is found the perturbed object is stacked on top of the highest collider:
+           z = collider_z + collider_half_height + perturbed_half_height + 2 mm gap
+
+    3. If no collision, the object's original Z is preserved (perturbations are
+       purely in the XY table plane).
 
     Robot-movement detection
     ------------------------
-    For "move", "replace", and "distractor" perturbation types, the engine
-    records the exact pose it writes at start_step (the "applied pose").  At
-    end_step + 1, before reverting, it reads the object's current pose and
-    computes the full XYZ Euclidean distance from the applied pose.  If that
-    distance exceeds spec.robot_move_threshold_m the object is considered to
-    have been picked up / repositioned by the robot during the perturbation
-    window, and its position is NOT reverted.  The default threshold is 0.0 m,
-    meaning any positional change — including vertical lifting — prevents the
-    revert.  Color reverts are unaffected by this check.
+    The exact pose written at start_step is recorded.  At end_step+1 the
+    current pose is compared; if the XYZ shift exceeds robot_move_threshold_m
+    the position revert is skipped so the robot's work is not undone.
     """
 
     def __init__(self, specs: List[TemporalPerturbationSpec]):
-        for spec in specs:
-            spec.validate()
+        for s in specs:
+            s.validate()
         self.specs = specs
-        self._snapshots: Dict[int, _PerturbationSnapshot] = {}  # spec_idx → snapshot
-        self._active: Dict[int, bool] = {}                       # spec_idx → is_active
+        self._snapshots: Dict[int, _PerturbationSnapshot] = {}
+        self._active: Dict[int, bool] = {}
         self._log: List[str] = []
-        self._sim = None  # cached sim reference
+        self._sim = None
 
     def reset(self, env):
-        """
-        Call this after env.reset() and before the first step.
-        Parks all distractor/replacement objects off-screen so they are
-        invisible until their perturbation window opens.
-        """
         self._sim = self._get_sim(env)
         self._snapshots = {}
         self._active = {i: False for i in range(len(self.specs))}
         self._log = []
 
         if self._sim is None:
-            print("[TEMPORAL] WARN: Could not access sim from env. "
-                  "Perturbations will be skipped.")
+            print("[TEMPORAL] WARN: Could not access sim. Perturbations will be skipped.")
             return
 
-        # Park distractors and replacement objects off-screen
-        for i, spec in enumerate(self.specs):
+        for spec in self.specs:
             if spec.pert_type == "distractor" and spec.distractor_obj_name:
                 ok = _park_object(self._sim, spec.distractor_obj_name)
-                msg = f"[TEMPORAL] Parked distractor '{spec.distractor_obj_name}'"
-                if not ok:
-                    msg += " [FAILED - object not found in sim]"
-                print(msg)
+                print(f"[TEMPORAL] Parked distractor '{spec.distractor_obj_name}'"
+                      + ("" if ok else " [FAILED]"))
             if spec.pert_type == "replace" and spec.replacement_obj_name:
                 ok = _park_object(self._sim, spec.replacement_obj_name)
-                msg = f"[TEMPORAL] Parked replacement '{spec.replacement_obj_name}'"
-                if not ok:
-                    msg += " [FAILED - object not found in sim]"
-                print(msg)
+                print(f"[TEMPORAL] Parked replacement '{spec.replacement_obj_name}'"
+                      + ("" if ok else " [FAILED]"))
 
     def step(self, env, step_idx: int):
-        """
-        Call once per step (before env.step()) with the current step index.
-        Applies perturbations whose window opens at this step and
-        reverts perturbations whose window closes at this step.
-        """
         sim = self._sim
         if sim is None:
             return
-
         for i, spec in enumerate(self.specs):
-            currently_active = self._active[i]
-
-            # ---- Window opens ----
-            if step_idx == spec.start_step and not currently_active:
-                snapshot = self._apply(sim, i, spec)
-                if snapshot is not None:
-                    self._snapshots[i] = snapshot
+            if step_idx == spec.start_step and not self._active[i]:
+                snap = self._apply(sim, i, spec)
+                if snap is not None:
+                    self._snapshots[i] = snap
                     self._active[i] = True
-
-            # ---- Window closes ----
-            elif step_idx == spec.end_step + 1 and currently_active:
+            elif step_idx == spec.end_step + 1 and self._active[i]:
                 self._revert(sim, i)
                 self._active[i] = False
 
     def flush(self, env):
-        """
-        Call at episode end to revert any still-active perturbations.
-        Safe to call even if no perturbations are active.
-        """
         sim = self._sim
         if sim is None:
             return
@@ -483,252 +637,186 @@ class TemporalPerturbationManager:
                 self._active[i] = False
 
     def summary(self):
-        """Print a summary of all perturbation events that occurred."""
         print("\n" + "=" * 60)
         print("[TEMPORAL] Perturbation Summary")
         print("=" * 60)
-        if not self._log:
-            print("  (no perturbations were applied)")
-        for msg in self._log:
+        for msg in self._log or ["  (no perturbations were applied)"]:
             print(f"  {msg}")
         print("=" * 60 + "\n")
 
     # ------------------------------------------------------------------
-    # Internal: apply
+    # Apply helpers
     # ------------------------------------------------------------------
 
-    def _apply(self, sim, spec_idx: int, spec: TemporalPerturbationSpec
+    def _apply(self, sim, idx: int, spec: TemporalPerturbationSpec
                ) -> Optional[_PerturbationSnapshot]:
-        snapshot = _PerturbationSnapshot(spec=spec)
-
-        if spec.pert_type == "move":
-            return self._apply_move(sim, spec, snapshot)
-        elif spec.pert_type == "color":
-            return self._apply_color(sim, spec, snapshot)
-        elif spec.pert_type == "distractor":
-            return self._apply_distractor(sim, spec, snapshot)
-        elif spec.pert_type == "replace":
-            return self._apply_replace(sim, spec, snapshot)
+        snap = _PerturbationSnapshot(spec=spec)
+        if spec.pert_type == "move":        return self._apply_move(sim, spec, snap)
+        if spec.pert_type == "color":       return self._apply_color(sim, spec, snap)
+        if spec.pert_type == "distractor":  return self._apply_distractor(sim, spec, snap)
+        if spec.pert_type == "replace":     return self._apply_replace(sim, spec, snap)
         return None
 
-    def _apply_move(self, sim, spec: TemporalPerturbationSpec,
-                    snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
-        # Snapshot original pose (before perturbation)
+    def _apply_move(self, sim, spec, snap) -> Optional[_PerturbationSnapshot]:
         original_pose = _read_object_pose(sim, spec.obj_name)
         if original_pose is None:
             print(f"[TEMPORAL] WARN: Cannot read pose for '{spec.obj_name}'. Skipping move.")
             return None
-        snapshot.original_poses[spec.obj_name] = original_pose
+        snap.original_poses[spec.obj_name] = original_pose
 
-        # Compute new position
         if spec.delta_xy is not None:
             dx, dy = spec.delta_xy
         else:
             dx = np.random.uniform(-spec.max_move_m, spec.max_move_m)
             dy = np.random.uniform(-spec.max_move_m, spec.max_move_m)
 
-        new_x = original_pose[0] + dx
-        new_y = original_pose[1] + dy
+        target_x = original_pose[0] + dx
+        target_y = original_pose[1] + dy
 
-        ok = _place_object_at_xy(sim, spec.obj_name, new_x, new_y)
+        final_x, final_y, final_z, reason = _resolve_placement(
+            sim, spec.obj_name, target_x, target_y, original_pose[2])
+
+        ok = _place_object_at_xyz(sim, spec.obj_name, final_x, final_y, final_z)
         if ok:
-            # Record the pose the engine just wrote so we can detect robot movement later
-            applied_pose = _read_object_pose(sim, spec.obj_name)
-            snapshot.applied_poses[spec.obj_name] = applied_pose
-
+            snap.applied_poses[spec.obj_name] = _read_object_pose(sim, spec.obj_name)
             msg = (f"step {spec.start_step}: MOVE '{spec.obj_name}' "
-                   f"by ({dx:+.4f}, {dy:+.4f}) m → "
-                   f"({new_x:.4f}, {new_y:.4f}) "
-                   f"[reverts at step {spec.end_step + 1} unless robot moves object]")
+                   f"Δ({dx:+.4f},{dy:+.4f}) m → ({final_x:.4f},{final_y:.4f},{final_z:.4f}) "
+                   f"[{reason}] [reverts step {spec.end_step + 1}]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
-            return snapshot
+            return snap
         return None
 
-    def _apply_color(self, sim, spec: TemporalPerturbationSpec,
-                     snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
-        # Snapshot original colors
+    def _apply_color(self, sim, spec, snap) -> Optional[_PerturbationSnapshot]:
         original_colors = _read_object_colors(sim, spec.obj_name)
         if original_colors is None:
-            print(f"[TEMPORAL] WARN: Cannot read colors for '{spec.obj_name}'. Skipping color.")
+            print(f"[TEMPORAL] WARN: Cannot read colors for '{spec.obj_name}'. Skipping.")
             return None
-        snapshot.original_colors[spec.obj_name] = original_colors
+        snap.original_colors[spec.obj_name] = original_colors
 
-        # Pick color
-        color_name = spec.color if spec.color else np.random.choice(list(COLOR_PALETTE.keys()))
+        color_name = spec.color or np.random.choice(list(COLOR_PALETTE.keys()))
         rgba = COLOR_PALETTE[color_name]
-
         ok = _write_object_colors(sim, spec.obj_name, rgba)
         if ok:
-            # Color perturbations have no position component; no applied_pose needed.
             msg = (f"step {spec.start_step}: COLOR '{spec.obj_name}' → {color_name} "
-                   f"{tuple(rgba)} [reverts at step {spec.end_step + 1}]")
+                   f"[reverts step {spec.end_step + 1}]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
-            return snapshot
+            return snap
         return None
 
-    def _apply_distractor(self, sim, spec: TemporalPerturbationSpec,
-                           snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
+    def _apply_distractor(self, sim, spec, snap) -> Optional[_PerturbationSnapshot]:
         dname = spec.distractor_obj_name
-        # Snapshot: record that it was parked (pose = off-screen)
-        parked_pose = np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT])
-        snapshot.original_poses[dname] = parked_pose
+        snap.original_poses[dname] = np.concatenate([_OFFSCREEN_XYZ, _IDENTITY_QUAT])
 
-        # Determine target position
         if spec.distractor_xy is not None:
             tx, ty = spec.distractor_xy
         else:
             tx = np.random.uniform(-0.2, 0.2)
             ty = np.random.uniform(-0.2, 0.2)
 
-        ok = _place_object_at_xy(sim, dname, tx, ty, z_override=0.02)
-        if ok:
-            # Record the pose the engine wrote for the distractor
-            applied_pose = _read_object_pose(sim, dname)
-            snapshot.applied_poses[dname] = applied_pose
+        # Default Z for a newly appearing object is just above the table surface.
+        default_z = 0.02
+        final_x, final_y, final_z, reason = _resolve_placement(
+            sim, dname, tx, ty, default_z)
 
+        ok = _place_object_at_xyz(sim, dname, final_x, final_y, final_z)
+        if ok:
+            snap.applied_poses[dname] = _read_object_pose(sim, dname)
             msg = (f"step {spec.start_step}: DISTRACTOR '{dname}' "
-                   f"appears at ({tx:.4f}, {ty:.4f}) "
-                   f"[reverts at step {spec.end_step + 1} unless robot moves object]")
+                   f"→ ({final_x:.4f},{final_y:.4f},{final_z:.4f}) "
+                   f"[{reason}] [reverts step {spec.end_step + 1}]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
-            return snapshot
+            return snap
         return None
 
-    def _apply_replace(self, sim, spec: TemporalPerturbationSpec,
-                        snapshot: _PerturbationSnapshot) -> Optional[_PerturbationSnapshot]:
-        # Snapshot original pose of target object (before perturbation)
+    def _apply_replace(self, sim, spec, snap) -> Optional[_PerturbationSnapshot]:
         original_pose = _read_object_pose(sim, spec.obj_name)
         if original_pose is None:
             print(f"[TEMPORAL] WARN: Cannot read pose for '{spec.obj_name}'. Skipping replace.")
             return None
-        snapshot.original_poses[spec.obj_name] = original_pose
-        # Replacement was pre-parked
-        snapshot.original_poses[spec.replacement_obj_name] = np.concatenate(
+        snap.original_poses[spec.obj_name] = original_pose
+        snap.original_poses[spec.replacement_obj_name] = np.concatenate(
             [_OFFSCREEN_XYZ, _IDENTITY_QUAT])
 
-        # Park original, bring replacement to same position
+        # Park the original first so it doesn't count as a collider
         _park_object(sim, spec.obj_name)
-        ok = _place_object_at_xy(sim, spec.replacement_obj_name,
-                                  original_pose[0], original_pose[1],
-                                  z_override=original_pose[2])
-        if ok:
-            # Record the pose written for the replacement object
-            applied_pose = _read_object_pose(sim, spec.replacement_obj_name)
-            snapshot.applied_poses[spec.replacement_obj_name] = applied_pose
 
+        target_x, target_y = original_pose[0], original_pose[1]
+        original_z = original_pose[2]
+
+        final_x, final_y, final_z, reason = _resolve_placement(
+            sim, spec.replacement_obj_name, target_x, target_y, original_z)
+
+        ok = _place_object_at_xyz(sim, spec.replacement_obj_name, final_x, final_y, final_z)
+        if ok:
+            snap.applied_poses[spec.replacement_obj_name] = \
+                _read_object_pose(sim, spec.replacement_obj_name)
             msg = (f"step {spec.start_step}: REPLACE '{spec.obj_name}' "
-                   f"with '{spec.replacement_obj_name}' "
-                   f"[reverts at step {spec.end_step + 1} unless robot moves replacement]")
+                   f"→ '{spec.replacement_obj_name}' "
+                   f"at ({final_x:.4f},{final_y:.4f},{final_z:.4f}) "
+                   f"[{reason}] [reverts step {spec.end_step + 1}]")
             print(f"[TEMPORAL] {msg}")
             self._log.append(msg)
-            return snapshot
+            return snap
+
+        # Placement failed — restore original
+        _write_object_pose(sim, spec.obj_name, original_pose)
         return None
 
     # ------------------------------------------------------------------
-    # Internal: revert
+    # Revert
     # ------------------------------------------------------------------
 
     def _revert(self, sim, spec_idx: int):
-        """
-        Revert a perturbation at the end of its window.
-
-        Position revert logic
-        ---------------------
-        For each object whose pose we would restore, we first check whether the
-        robot moved it during the window.  We do this by comparing the object's
-        *current* 3-D position to the position the engine wrote at start_step
-        (the "applied pose") using a full XYZ Euclidean distance.  If the
-        displacement exceeds spec.robot_move_threshold_m we skip restoring that
-        object's position so the robot's work is preserved.
-
-        This check applies uniformly to ALL object types, including distractors.
-        If the robot picked up and repositioned a distractor during the window,
-        it will remain where the robot left it.
-
-        Color reverts are always applied regardless of robot movement, since a
-        color change is a visual property independent of where the robot placed
-        the object.
-        """
-        snapshot = self._snapshots.get(spec_idx)
-        if snapshot is None:
+        snap = self._snapshots.get(spec_idx)
+        if snap is None:
             return
-        spec = snapshot.spec
+        spec = snap.spec
 
-        # ---- Restore poses (with robot-movement check) ----
-        for obj_name, original_pose in snapshot.original_poses.items():
-            applied_pose = snapshot.applied_poses.get(obj_name)
+        for obj_name, original_pose in snap.original_poses.items():
+            applied_pose = snap.applied_poses.get(obj_name)
             current_pose = _read_object_pose(sim, obj_name)
-
-            # Determine whether to skip position revert.
-            # Robot-movement detection applies to ALL object types uniformly,
-            # including distractors.
-            if _robot_moved_object(
-                current_pose, applied_pose, spec.robot_move_threshold_m
-            ):
-                # Robot moved this object during the window — leave it where it is.
-                if current_pose is not None and applied_pose is not None:
-                    xyz_shift = np.linalg.norm(current_pose[:3] - applied_pose[:3])
-                else:
-                    xyz_shift = float("nan")
-                msg = (f"step {spec.end_step + 1}: SKIP pose revert of '{obj_name}' "
-                       f"(robot moved it {xyz_shift:.4f} m during window "
-                       f"> threshold {spec.robot_move_threshold_m:.4f} m)")
+            if _robot_moved_object(current_pose, applied_pose, spec.robot_move_threshold_m):
+                shift = (float(np.linalg.norm(current_pose[:3] - applied_pose[:3]))
+                         if current_pose is not None and applied_pose is not None
+                         else float("nan"))
+                msg = (f"step {spec.end_step + 1}: SKIP revert '{obj_name}' "
+                       f"(robot moved {shift:.4f} m > threshold {spec.robot_move_threshold_m:.4f} m)")
                 print(f"[TEMPORAL] {msg}")
                 self._log.append(msg)
             else:
-                # Robot did not move the object — restore original pose.
                 _write_object_pose(sim, obj_name, original_pose)
-                print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT pose of '{obj_name}' "
-                      f"(robot did not move object)")
+                print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT pose '{obj_name}'")
 
-        # ---- Restore colors (always, independent of robot movement) ----
-        for obj_name, geom_colors in snapshot.original_colors.items():
+        for obj_name, geom_colors in snap.original_colors.items():
             body_name = _find_object_body_name(sim, obj_name)
             if body_name:
                 for gid, rgba in geom_colors.items():
                     sim.model.geom_rgba[gid] = rgba
-            print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT color of '{obj_name}'")
+            print(f"[TEMPORAL] step {spec.end_step + 1}: REVERT color '{obj_name}'")
 
         msg = (f"step {spec.end_step + 1}: REVERTED {spec.pert_type} "
                f"on '{spec.obj_name or spec.distractor_obj_name}'")
         self._log.append(msg)
 
     # ------------------------------------------------------------------
-    # Internal: sim access
+    # Sim access
     # ------------------------------------------------------------------
 
     @staticmethod
     def _get_sim(env):
-        """
-        Get the MuJoCo sim from a LIBERO OffScreenRenderEnv / ControlEnv.
-
-        ControlEnv exposes a `sim` property that returns `self.env.sim`, where
-        `self.env` is the underlying robosuite task environment.  So `env.sim`
-        is always the correct path — no need to dig further.
-
-        We still fall back to `env.env.sim` for safety (e.g. if someone passes
-        the raw robosuite env instead of the ControlEnv wrapper).
-        """
-        # Primary path: ControlEnv.sim property → self.env.sim
-        try:
-            sim = env.sim
-            if sim is not None:
-                return sim
-        except AttributeError:
-            pass
-
-        # Fallback: raw robosuite env passed directly
-        try:
-            sim = env.env.sim
-            if sim is not None:
-                return sim
-        except AttributeError:
-            pass
-
-        print("[TEMPORAL] WARN: Could not locate 'sim' on env. "
-              "Expected a ControlEnv (OffScreenRenderEnv) instance.")
+        for attr_path in (("sim",), ("env", "sim")):
+            obj = env
+            try:
+                for attr in attr_path:
+                    obj = getattr(obj, attr)
+                if obj is not None:
+                    return obj
+            except AttributeError:
+                pass
+        print("[TEMPORAL] WARN: Could not locate 'sim' on env.")
         return None
 
 
@@ -739,29 +827,14 @@ class TemporalPerturbationManager:
 def add_hidden_objects_to_bddl(bddl_text: str, hidden_objects: List[Tuple[str, str]],
                                  target_workspace: str = "kitchen_table") -> str:
     """
-    Add objects to a BDDL file that will be pre-spawned off-screen, ready for
-    temporal distractor or replace perturbations.
-
-    Args:
-        bddl_text: Original BDDL content
-        hidden_objects: List of (obj_instance_name, obj_type_name) tuples
-                        e.g. [("moka_pot_999", "moka_pot")]
-        target_workspace: Workspace name for the init region target
-
-    Returns:
-        Modified BDDL text with hidden objects declared and initialized off-screen.
-
-    Note:
-        The objects are placed far off-screen (100, 100) in the :regions block
-        so they exist in the sim but are invisible at episode start.
-        TemporalPerturbationManager.reset() also parks them on env.reset().
+    Inject objects into a BDDL that will be pre-spawned off-screen and
+    teleported in/out by TemporalPerturbationManager.
     """
     OFFSCREEN_RANGES = "99.9 99.9 100.1 100.1"
 
     for obj_name, obj_type in hidden_objects:
         region_name = f"{obj_name}_hidden_region"
 
-        # --- Add to :objects ---
         obj_section = re.search(r"(\(:objects\s*\n)((?:.*\n)*?)(\s*\))", bddl_text)
         if obj_section:
             obj_content = obj_section.group(2)
@@ -772,91 +845,85 @@ def add_hidden_objects_to_bddl(bddl_text: str, hidden_objects: List[Tuple[str, s
                          obj_section.group(1) + new_obj_content +
                          obj_section.group(3) + bddl_text[obj_section.end():])
 
-        # --- Add region definition ---
-        region_def = f"""      ({region_name}
-          (:target {target_workspace})
-          (:ranges (
-              ({OFFSCREEN_RANGES})
-            )
-          )
-          (:yaw_rotation (
-              (0.0 0.0)
-            )
-          )
-      )"""
+        region_def = (
+            f"      ({region_name}\n"
+            f"          (:target {target_workspace})\n"
+            f"          (:ranges (\n"
+            f"              ({OFFSCREEN_RANGES})\n"
+            f"            )\n"
+            f"          )\n"
+            f"          (:yaw_rotation (\n"
+            f"              (0.0 0.0)\n"
+            f"            )\n"
+            f"          )\n"
+            f"      )"
+        )
 
         regions_start = bddl_text.find("(:regions")
         if regions_start == -1:
-            print(f"[HIDDEN] WARN: Could not find :regions block. Skipping {obj_name}.")
+            print(f"[HIDDEN] WARN: No :regions block. Skipping {obj_name}.")
             continue
-        depth = 0
-        regions_end = -1
+        depth, regions_end = 0, -1
         for i in range(regions_start, len(bddl_text)):
-            if bddl_text[i] == "(":
-                depth += 1
+            if bddl_text[i] == "(": depth += 1
             elif bddl_text[i] == ")":
                 depth -= 1
                 if depth == 0:
                     regions_end = i
                     break
-        bddl_text = (bddl_text[:regions_end] +
-                     "\n" + region_def + "\n" +
-                     bddl_text[regions_end:])
+        bddl_text = (bddl_text[:regions_end] + "\n" + region_def + "\n"
+                     + bddl_text[regions_end:])
 
-        # --- Add to :init ---
         init_section = re.search(r"(\(:init\s*\n)((?:.*\n)*?)(\s*\))", bddl_text)
         if init_section:
             init_content = init_section.group(2)
             last_line = init_content.rstrip().split('\n')[-1] if init_content.strip() else ""
             indent = re.match(r'^(\s*)', last_line).group(1) if last_line else "    "
             new_init_content = (init_content +
-                                f"{indent}(On {obj_name} "
-                                f"{target_workspace}_{region_name})\n")
+                                f"{indent}(On {obj_name} {target_workspace}_{region_name})\n")
             bddl_text = (bddl_text[:init_section.start()] +
                          init_section.group(1) + new_init_content +
                          init_section.group(3) + bddl_text[init_section.end():])
 
-        print(f"[HIDDEN] Added hidden object '{obj_name}' ({obj_type}) to BDDL at off-screen position")
-
+        print(f"[HIDDEN] Added '{obj_name}' ({obj_type}) off-screen.")
     return bddl_text
 
 
 # ---------------------------------------------------------------------------
-# Config-driven factory: build specs from YAML config dict
+# Config-driven factory
 # ---------------------------------------------------------------------------
 
-def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbationSpec]:
+def specs_from_config(temporal_config: List[Dict[str, Any]]) -> List[TemporalPerturbationSpec]:
     """
-    Build a list of TemporalPerturbationSpec from a config dict.
+    Build TemporalPerturbationSpec list from a YAML config list.
 
-    Expected YAML structure (under 'temporal_perturbations' key):
+    YAML structure:
         temporal_perturbations:
           - type: move
             obj_name: akita_black_bowl_1
             start_step: 50
             end_step: 150
-            delta_xy: [0.05, 0.0]         # optional; random if omitted
-            max_move_m: 0.05              # used only when delta_xy is omitted
-            robot_move_threshold_m: 0.01  # optional; default 0.0 m (any movement counts)
+            delta_xy: [0.06, 0.0]
+            max_move_m: 0.05
+            robot_move_threshold_m: 0.01   # optional, default 0.0
 
           - type: color
             obj_name: wine_bottle_1
             start_step: 80
             end_step: 200
-            color: red                    # optional; random if omitted
+            color: red                     # optional, random if omitted
 
           - type: distractor
             distractor_obj_name: moka_pot_999
             start_step: 100
             end_step: 300
-            distractor_xy: [0.1, -0.1]   # optional; random if omitted
+            distractor_xy: [0.1, -0.1]    # optional, random if omitted
 
           - type: replace
             obj_name: wine_bottle_1
             replacement_obj_name: milk_777
             start_step: 120
             end_step: 250
-            robot_move_threshold_m: 0.02  # optional; default 0.0 m (any movement counts)
     """
     specs = []
     for entry in temporal_config:
@@ -869,46 +936,36 @@ def specs_from_config(temporal_config: Dict[str, Any]) -> List[TemporalPerturbat
             delta_xy = tuple(entry["delta_xy"]) if "delta_xy" in entry else None
             specs.append(TemporalPerturbationSpec(
                 pert_type="move",
-                start_step=start,
-                end_step=end,
+                start_step=start, end_step=end,
                 obj_name=entry["obj_name"],
                 delta_xy=delta_xy,
                 max_move_m=entry.get("max_move_m", 0.05),
                 robot_move_threshold_m=threshold,
             ))
-
         elif ptype == "color":
             specs.append(TemporalPerturbationSpec(
                 pert_type="color",
-                start_step=start,
-                end_step=end,
+                start_step=start, end_step=end,
                 obj_name=entry["obj_name"],
                 color=entry.get("color"),
-                # No threshold needed for color-only perturbations
             ))
-
         elif ptype == "distractor":
             dxy = tuple(entry["distractor_xy"]) if "distractor_xy" in entry else None
             specs.append(TemporalPerturbationSpec(
                 pert_type="distractor",
-                start_step=start,
-                end_step=end,
+                start_step=start, end_step=end,
                 distractor_obj_name=entry["distractor_obj_name"],
                 distractor_xy=dxy,
                 robot_move_threshold_m=threshold,
             ))
-
         elif ptype == "replace":
             specs.append(TemporalPerturbationSpec(
                 pert_type="replace",
-                start_step=start,
-                end_step=end,
+                start_step=start, end_step=end,
                 obj_name=entry["obj_name"],
                 replacement_obj_name=entry["replacement_obj_name"],
                 robot_move_threshold_m=threshold,
             ))
-
         else:
             raise ValueError(f"Unknown temporal perturbation type: '{ptype}'")
-
     return specs

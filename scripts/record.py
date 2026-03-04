@@ -55,6 +55,16 @@ Notes:
   - If a window is still open at episode end, it is auto-reverted via flush().
   - Perturbation events are recorded in the HDF5 output under
     data/demo_N/perturbation_events (JSON string).
+
+Pre-episode collision Z corrections (z_overrides):
+  - When the launcher detects that a perturbed object's BDDL init position
+    would collide with another object or an open cavity (drawer/door), it
+    writes a JSON sidecar (z_overrides_file in the config YAML).
+  - After env.reset(), record.py loads this file, calls resolve_z_overrides()
+    to compute accurate heights from real sim geometry, then writes the
+    corrected poses before the stabilization steps run.  This means the
+    objects start the episode at the correct height (stacked on top of a
+    collider, or placed inside an open drawer) rather than clipping through.
 """
 
 import os
@@ -62,6 +72,7 @@ import sys
 import h5py
 import json
 import argparse
+import glob
 import yaml
 import tempfile
 import numpy as np
@@ -73,8 +84,7 @@ import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
 # ---------------------------------------------------------------------------
-# Path setup — mirrors record.py so imports are robust regardless of cwd.
-# See record.py for full explanation.
+# Path setup
 # ---------------------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)
@@ -108,12 +118,18 @@ from libero.libero.utils.temporal_perturbations import (
     TemporalPerturbationManager,
     add_hidden_objects_to_bddl,
     specs_from_config,
+    _write_object_pose,      # low-level pose writer used for z_override application
 )
-from libero.libero.utils.generate_perturbation_bddl import read_bddl, validate_bddl, extract_target_workspace
+from libero.libero.utils.generate_perturbation_bddl import (
+    read_bddl,
+    validate_bddl,
+    extract_target_workspace,
+    resolve_z_overrides,     # converts sentinel/estimated entries to sim-accurate (cx,cy,z)
+)
 
 
 # ---------------------------------------------------------------------------
-# Image preprocessing (unchanged from original record.py)
+# Image preprocessing
 # ---------------------------------------------------------------------------
 
 def preprocess_image(obs, resize_size=256, center_crop=True):
@@ -143,7 +159,7 @@ def invert_gripper_action(action):
 
 
 # ---------------------------------------------------------------------------
-# Model loading (unchanged)
+# Model loading
 # ---------------------------------------------------------------------------
 
 def load_openvla(task_suite_name, device, cache_dir):
@@ -164,7 +180,6 @@ def load_openvla(task_suite_name, device, cache_dir):
         trust_remote_code=True,
     ).to(device)
     if not hasattr(vla, "norm_stats"):
-        import glob
         if cache_dir:
             pattern = os.path.join(
                 cache_dir,
@@ -198,21 +213,12 @@ def prepare_bddl_with_hidden_objects(
     """
     Read the base BDDL, inject hidden objects for distractor/replace perturbations,
     write to a temp file, and return the temp file path.
-
-    Args:
-        base_bddl_path : Path to original BDDL file.
-        hidden_objects : List of dicts with 'name' and 'type' keys.
-        target_workspace: Workspace name (auto-detected from BDDL if None).
-
-    Returns:
-        Path to the modified temporary BDDL file.
     """
     if not hidden_objects:
         return base_bddl_path
 
     bddl_text = read_bddl(base_bddl_path)
 
-    # Auto-detect workspace if not provided
     if target_workspace is None:
         target_workspace = extract_target_workspace(bddl_text)
 
@@ -222,14 +228,92 @@ def prepare_bddl_with_hidden_objects(
     if not validate_bddl(bddl_text):
         raise RuntimeError("Modified BDDL (with hidden objects) failed validation.")
 
-    # Write to a temp file (env needs a file path, not a string)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".bddl", delete=False, prefix="temporal_"
     )
     tmp.write(bddl_text)
     tmp.close()
-    print(f"[TEMPORAL] Wrote modified BDDL (with {len(hidden_objects)} hidden object(s)) → {tmp.name}")
+    print(f"[TEMPORAL] Wrote modified BDDL ({len(hidden_objects)} hidden object(s)) → {tmp.name}")
     return tmp.name
+
+
+# ---------------------------------------------------------------------------
+# Z-override application — resolve and apply after env.reset()
+# ---------------------------------------------------------------------------
+
+def apply_z_overrides(env, z_overrides_file: Optional[str]) -> None:
+    """
+    Load the z_overrides JSON sidecar produced by apply_perturbations(), resolve
+    any sentinel / estimated entries against the live sim geometry, then write
+    the corrected 7-DOF poses for each affected object.
+
+    This must be called AFTER env.reset() (so the sim is fully initialised and
+    sim.forward() has been called) but BEFORE the stabilization steps (so
+    physics sees the objects at the correct height from the start).
+
+    Args:
+        env             : OffScreenRenderEnv / ControlEnv instance.
+        z_overrides_file: Path to JSON sidecar, or None.  When None this
+                          function is a no-op (no collisions were detected
+                          during BDDL generation).
+
+    The JSON sidecar contains a dict {obj_name: [element, ...]}.  Each value
+    is either:
+      • ["__cavity__", region_name, cx, cy]  — sentinel; Z resolved from sim
+      • [cx, cy, estimated_z]               — plain stack; Z refined from sim
+
+    After resolve_z_overrides() both forms become (cx, cy, z_final) and the
+    object is teleported to that position using _write_object_pose().
+    """
+    if not z_overrides_file:
+        return
+
+    if not os.path.exists(z_overrides_file):
+        print(f"[Z_OVERRIDE] WARN: z_overrides_file not found: {z_overrides_file}. Skipping.")
+        return
+
+    with open(z_overrides_file, "r") as f:
+        raw = json.load(f)
+
+    if not raw:
+        return
+
+    # JSON stores lists; convert back to tuples to match the internal contract.
+    z_overrides = {k: tuple(v) for k, v in raw.items()}
+
+    # Obtain the MuJoCo sim — same path used by TemporalPerturbationManager.
+    sim = None
+    for attr_path in (("sim",), ("env", "sim")):
+        obj = env
+        try:
+            for attr in attr_path:
+                obj = getattr(obj, attr)
+            if obj is not None:
+                sim = obj
+                break
+        except AttributeError:
+            pass
+
+    if sim is None:
+        print("[Z_OVERRIDE] WARN: Could not access sim from env. Cannot apply z_overrides.")
+        return
+
+    # resolve_z_overrides() replaces sentinel/estimated entries with
+    # sim-accurate (cx, cy, z) tuples using real geom positions.
+    resolved = resolve_z_overrides(sim, z_overrides)
+
+    if not resolved:
+        return
+
+    print(f"[Z_OVERRIDE] Applying {len(resolved)} collision Z correction(s)...")
+    for obj_name, (cx, cy, z) in resolved.items():
+        # Identity quaternion: w=1, x=0, y=0, z=0
+        pose = np.array([cx, cy, z, 1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        ok = _write_object_pose(sim, obj_name, pose)
+        if ok:
+            print(f"  [Z_OVERRIDE] '{obj_name}' → ({cx:.4f}, {cy:.4f}, z={z:.4f})")
+        else:
+            print(f"  [Z_OVERRIDE] WARN: Failed to set pose for '{obj_name}'")
 
 
 # ---------------------------------------------------------------------------
@@ -249,23 +333,27 @@ def record_single_demo(
     Record a single demonstration, applying temporal perturbations if provided.
 
     Returns a dict with keys:
-        actions, dones, rewards, states, obs_list, perturbation_events
+        actions, dones, rewards, states, obs_list, perturbation_events, frames
     """
     np.random.seed(seed)
-    # seed() must come BEFORE reset() — ControlEnv.reset() calls self.env.reset()
-    # internally so seeding after would have no effect on initialization.
     env.seed(seed)
     obs = env.reset()
 
-    # Initialize temporal perturbation manager AFTER reset() so the sim is
-    # fully constructed, but BEFORE stabilization steps so hidden objects are
-    # parked before the physics settle (avoids hidden objects being "thrown"
-    # into scene by the initial velocity bleed-in from their off-screen spawn).
+    # ---- Apply pre-episode collision Z corrections ----
+    # Must happen after env.reset() (sim is live) but before stabilization
+    # steps so physics sees objects at the correct height from frame 0.
+    # This corrects objects that were detected to collide at BDDL-generation
+    # time: they are stacked on top of colliders or placed inside open cavities.
+    apply_z_overrides(env, config.get("z_overrides_file"))
+
+    # ---- Initialize temporal perturbation manager ----
+    # After reset() so the sim is constructed; hidden objects are parked here
+    # (before stabilization so they don't bleed into the physics from their
+    # off-screen spawn position).
     if temporal_manager is not None:
         temporal_manager.reset(env)
 
-    # Stabilization steps — run with gripper closed, no movement.
-    # Hidden objects are already parked at (100,100,100) by manager.reset().
+    # ---- Stabilization steps ----
     for _ in range(10):
         obs, _, _, _ = env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
 
@@ -273,8 +361,7 @@ def record_single_demo(
         "libero_spatial": 220,
         "libero_object": 280,
         "libero_goal": 300,
-        # "libero_10": 520,
-        "libero_10": 200, # TODO: put this back to 520
+        "libero_10": 200,   # TODO: restore to 520
         "libero_90": 400,
     }
     max_steps = max_steps_dict.get(config["task_suite_name"], 200)
@@ -283,8 +370,6 @@ def record_single_demo(
 
     actions, dones, rewards, states, obs_list = [], [], [], [], []
     frames = []
-    
-    # Track which steps had active perturbations for analysis
     perturbation_events: List[Dict[str, Any]] = []
 
     step = 0
@@ -297,7 +382,6 @@ def record_single_demo(
         if temporal_manager is not None:
             prev_active = dict(temporal_manager._active)
             temporal_manager.step(env, step)
-            # Log any state changes for HDF5 metadata
             for i, spec in enumerate(temporal_manager.specs):
                 was_active = prev_active.get(i, False)
                 now_active = temporal_manager._active.get(i, False)
@@ -370,33 +454,24 @@ def record_single_demo(
         "frames": frames,
     }
 
+
 # ---------------------------------------------------------------------------
 # Save demo videos
 # ---------------------------------------------------------------------------
 
 def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -> None:
-    """
-    Save a list of frames as an MP4 video.
-
-    Args:
-        frames: List of (H, W, 3) numpy arrays in uint8 format.
-        output_path: Path to save the video file (e.g., demo_0.mp4).
-        fps: Frames per second (default 20).
-    """
-
+    """Save a list of (H, W, 3) uint8 frames as an MP4 video."""
     if not frames:
         print(f"  ⚠ No frames to save, skipping video.")
         return
-
     h, w, _ = frames[0].shape
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-
     for frame in frames:
         writer.write(frame)
     writer.release()
-
     print(f"  ✓ Saved video: {output_path} ({len(frames)} frames)")
+
 
 # ---------------------------------------------------------------------------
 # Main recording function
@@ -428,13 +503,6 @@ def record_demo(config: Dict[str, Any]):
         print("\n[TEMPORAL] No temporal perturbations configured.")
 
     # ---- Initialize environment ----
-    # OffScreenRenderEnv → ControlEnv → self.env (robosuite task env)
-    # Sim access: env.sim  (ControlEnv property) → env.env.sim  (robosuite MjSim)
-    # Note: ControlEnv.reset() has `finally: continue` which causes it to
-    # always iterate the while loop once more after success — this is a
-    # pre-existing LIBERO bug and does not affect correctness, only adds one
-    # extra reset() call per demo. Our manager.reset(env) is called after
-    # env.reset() returns so we always get a fully initialized sim.
     env_args = {
         "bddl_file_name": bddl_file,
         "camera_heights": 256,
@@ -495,17 +563,14 @@ def record_demo(config: Dict[str, Any]):
                 )
                 obs_grp.create_dataset(k, data=obs_stack, compression="gzip")
 
-            # Save perturbation event log as JSON string attribute
-            dset.attrs["perturbation_events"] = json.dumps(
-                demo_data["perturbation_events"]
-            )
+            dset.attrs["perturbation_events"] = json.dumps(demo_data["perturbation_events"])
 
     print(f"✓ Saved {num_demos} demo(s) to {out_file}")
 
     # ---- Save videos ----
     record_path = config["record_path"]
     video_dir = os.path.dirname(record_path)
-    video_base = os.path.splitext(os.path.basename(video_dir))[0]
+    video_base = os.path.splitext(os.path.basename(record_path))[0]
 
     print(f"\nSaving {num_demos} video(s)...")
     for demo_idx, demo_data in enumerate(all_demos):
@@ -542,7 +607,8 @@ def main():
     print(f"Output     : {config['out_file']}")
     n_tp = len(config.get("temporal_perturbations", []))
     n_ho = len(config.get("hidden_objects", []))
-    print(f"Temporal perturbations: {n_tp} | Hidden objects: {n_ho}")
+    n_zo = 1 if config.get("z_overrides_file") else 0
+    print(f"Temporal perturbations: {n_tp} | Hidden objects: {n_ho} | Z overrides: {'yes' if n_zo else 'no'}")
     print("=" * 80)
 
     record_demo(config)
