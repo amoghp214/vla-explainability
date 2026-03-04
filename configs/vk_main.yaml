@@ -1,0 +1,147 @@
+# Main configuration file for pipelined perturbed dataset generation
+# This file contains all parameters needed for record.py, playback.py, and perturbation generation
+
+# =============================================================================
+# Base Task Configuration
+# =============================================================================
+model: openvla
+task_suite_name: libero_10
+device: cuda:0
+cache_dir: /home/hice1/vkulkarni46/scratch/huggingface
+
+# Original BDDL file (will be used as base for perturbations)
+# base_bddl_file: libero/libero/bddl_files/libero_90/KITCHEN_SCENE1_put_the_black_bowl_on_the_plate.bddl
+# base_prompt: put the black bowl on the plate
+base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
+base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
+
+# Recording parameters
+action_scale: 1.0
+num_demos: 10  # Number of demonstrations to record per perturbation
+noise_std: 0.001  # Gaussian noise std deviation for action deltas
+
+# =============================================================================
+# Perturbation Configuration
+# =============================================================================
+perturbations:
+  # Number of perturbations to generate
+  num_perturbations: 6
+  
+  # Perturbation types to generate
+  # Options: bddl_spatial, language
+  types:
+    - bddl_spatial
+    # - language
+  
+  # For BDDL spatial perturbations
+  bddl_spatial:
+    # Max init range (m): when init is "exact" (init_object_range_m 0), every region gets this extent
+    # so the env barely changes across runs and MuJoCo gets a valid positive geom size. Default 0.001 (1 mm).
+    max_init_range_m: 0.001
+    # List of perturbation combinations to apply
+    # Each entry is a dict with perturbation type and target objects
+    perturbation_specs:
+      - type: move
+        objects: ["akita_black_bowl_1"]
+        max_move_m: 0.05 # This is the max move distance for the "move" perturbation type (in meters)
+      # - type: reorient
+      #   objects: ["akita_black_bowl_1", "wine_bottle_1"]
+      # - type: color
+      #   objects: ["akita_black_bowl_1"]
+      # - type: distractor
+      #   count: 1
+      # - type: replace
+      #   objects: ["akita_black_bowl_1"]
+      - type: control
+        objects: []
+  
+  # For language perturbations (if enabled)
+  language:
+    # Will use generate_perturbations from explainability/perturbations/language/
+    # All standard perturbations will be generated
+
+# =============================================================================
+# SLURM Job Configuration
+# =============================================================================
+slurm:
+  # Maximum number of simultaneous jobs
+  max_concurrent_jobs: 20
+  
+  # Job parameters
+  job_params:
+    partition: "coc-gpu"  # Optional - can omit for auto-select
+    account: "coc"      # Optional - can omit for default account
+    time: "02:00:00"
+    nodes: 1
+    ntasks_per_node: 1
+    cpus_per_task: 4
+    mem: 16G
+    gpus: 1
+    # gpu_type: "V100" #TODO: make this more flexible (e.g. allow A100, etc.)
+    constraint: null  # Optional: "V100-32GB", "A100-80GB", etc.
+    blacklisted_nodes: ["atl1-1-01-002-8-0"]  # Optional: List of node names to exclude from job allocation
+                           # Example: ["node001", "node002"] or ["node[001-005]"]
+                           # Uses SLURM --exclude flag to prevent jobs from running on problematic nodes
+  
+  # Environment setup
+  conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
+  module_load: ["anaconda3/2023.03", "cuda/12.6.1"]  # List of modules to load (e.g., ["cuda/11.8"])
+  
+  # Job script template variables
+  job_name_prefix: "vla_record"
+  
+  # Polling interval for checking job status (seconds)
+  poll_interval: 30
+
+# =============================================================================
+# Directory Structure
+# =============================================================================
+# Base directory for runs (will be created in scratch folder)
+# If not set, will use $SCRATCH/vla-explainability-runs
+run_base_dir: null
+
+# =============================================================================
+# Bayesian Optimization (optional)
+# =============================================================================
+# Used by: python -m explainability.vla_bayesian_optimization --config configs/main.yaml
+# bayesian_optimization:
+#   pbounds: { dx: [-0.05, 0.05], dz: [-0.05, 0.05] }
+#   object_names: ["akita_black_bowl_1"]
+#   batch_size: 2
+#   init_points: 5
+#   n_iter: 10
+
+# =============================================================================
+# Random design (BoTorch heatmap) - optional
+# =============================================================================
+# Used by: python scripts/launcher.py --config configs/main.yaml --random-design
+# Generates n_design random (x, z) translation perturbations, runs record jobs,
+# computes VLA metric per point, fits GP and saves heatmap to run_dir.
+random_design:
+  n_design: 50
+  seed: 1
+  bounds_x: [-0.1, 0.1]   # x translation range (m)
+  bounds_z: [-0.1, 0.1]   # z translation range (m)
+  object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
+  uniform: true
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  # Enable evaluation after all jobs complete
+  enabled: true
+  
+  # Metric weights for VLA metrics
+  metric_weights:
+    w_result: 1.0
+    w_time: 1.0
+    w_trajectory: 1.0
+  
+  # Trajectory weight matrix (8D: xyz, quat, gripper)
+  trajectory_weights: [1.0, 1.0, 1.0, 0, 0, 0, 0, 0]
+  
+  # Output formats
+  output_formats:
+    - json
+    - hdf5
