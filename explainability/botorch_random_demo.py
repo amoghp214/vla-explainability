@@ -117,7 +117,9 @@ def build_and_fit_model(
     """
     def _make_kernel(name: str, dim: int):
         n = (name or "").lower()
-        if n in ("matern1.5", "matern15"):
+        if n in ("matern0.5", "matern05"):
+            base = MaternKernel(nu=0.5, ard_num_dims=dim)
+        elif n in ("matern1.5", "matern15"):
             base = MaternKernel(nu=1.5, ard_num_dims=dim)
         elif n in ("matern2.5", "matern25"):
             base = MaternKernel(nu=2.5, ard_num_dims=dim)
