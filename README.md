@@ -27,7 +27,7 @@ The system:
 2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
 3. **Post-processes** — Optionally renders videos from HDF5 recordings (controlled by `render_videos` in config) and runs evaluation (trajectory comparison, metrics).
 
-You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally. A **random-design** mode generates random (x, z) translation perturbations, runs the pipeline, and produces a heatmap of the VLA metric vs translation (see [Random-design mode](#random-design-mode-metric-vs-translation-heatmap)).
+You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally. **Random-design** mode can run in two ways: **move** (random (x, z) translation of one object → heatmap of metric vs absolute position) or **distract** (random (x, z) position to add a distractor → heatmap of metric vs distractor position). See [Random-design mode](#random-design-mode-metric-vs-translation-heatmap).
 
 ---
 
@@ -64,17 +64,24 @@ Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
 
 ## Random-design mode (metric vs translation heatmap)
 
-Random-design treats **one perturbation run as one black-box evaluation**: the input is (x, z) **delta** translation (move) for a single object from its original BDDL position, and the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed). The launcher generates `n_design` random (dx, dz) deltas in the given bounds, places the object at **(original_center + dx, original_center + dz)**, dispatches record jobs, runs evaluation, fits a BoTorch GP, and saves a **heatmap of metric vs absolute (x, z) position** (i.e. original object position + delta).
+Random-design treats **one perturbation run as one black-box evaluation**. Two modes are supported:
+
+- **move** — Input is (x, z) **delta** translation for a single object from its original BDDL position. The launcher generates `n_design` random deltas in the given bounds, places the object at **(original_center + dx, original_center + dz)**, and produces a **heatmap of metric vs absolute (x, z) position**.
+- **distract** — Input is (x, z) **position** where a new distractor object is added. The launcher generates `n_design` random positions in the given bounds, adds a distractor at each (x, z), and produces a **heatmap of metric vs distractor position**. You can specify the distractor object type in config.
+
+In both modes the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed); a BoTorch GP is fitted and a heatmap is saved.
 
 ### Usage
 
 ```bash
-# Full pipeline: generate random points → SLURM → evaluate → heatmap
-# Bounds default to (-max_move_m, max_move_m) from config (see Configuration)
+# Move mode (default): translate one object, heatmap vs absolute position
 python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20
 
 # Override bounds (comma-separated low,high for both x and z, in meters)
 python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20 --bounds -0.05,0.05
+
+# Distract mode: add distractor at random (x,z), heatmap vs distractor position
+python scripts/launcher.py --config configs/main.yaml --random-design --random-design-type distract --n-design 20 --bounds -0.2,0.2
 
 # Generate only (then record and re-run without --generate-only to get heatmap)
 python scripts/launcher.py --config configs/main.yaml --random-design --generate-only --run-dir ./rd_run
@@ -84,11 +91,12 @@ python scripts/launcher.py --config configs/main.yaml --random-design --generate
 
 | Option | Description |
 |--------|-------------|
-| `--random-design` | Enable random-design pipeline (random x, z move → metric → heatmap). |
+| `--random-design` | Enable random-design pipeline (move or distract → metric → heatmap). |
+| `--random-design-type` | `move` (default) or `distract`. Move = translate one object by delta; distract = add distractor at (x,z) position. |
 | `--n-design` | Number of random design points (default from config or 20). |
 | `--seed` | Random seed for sampling (default from config or 1). |
-| `--bounds` | Optional. Comma-separated `low,high` in meters for both x and z. If omitted, uses **`(-max_move_m, max_move_m)`** from `perturbations.bddl_spatial.max_move_m` in the config. |
-| `--objects` | Object name for move (exactly one). If omitted, uses first move object from `perturbation_specs` in config. |
+| `--bounds` | Optional. Comma-separated `low,high` in meters for both x and z. For move: delta range; for distract: position range. If omitted, uses **`(-max_move_m, max_move_m)`** from config. |
+| `--objects` | Object name for **move** mode only (exactly one). If omitted, uses first move object from `perturbation_specs` in config. Ignored in distract mode. |
 
 ### Config (optional)
 
@@ -96,12 +104,24 @@ You can set defaults in `configs/main.yaml` under `random_design`:
 
 ```yaml
 random_design:
+  type: move   # "move" | "distract"
   n_design: 20
   seed: 1
-  bounds_x: [-0.05, 0.05]   # optional; default from max_move_m
-  bounds_z: [-0.05, 0.05]   # optional; default from max_move_m
-  object_names: ["akita_black_bowl_1"]   # exactly one object
+  bounds_x: [-0.05, 0.05]   # For move: delta range (m). For distract: position range (m).
+  bounds_z: [-0.05, 0.05]
+  object_names: ["akita_black_bowl_1"]   # Required for type=move only (exactly one object)
+  uniform: true
+  # Distract mode only:
+  distractor_count: 1
+  distractor_object_type: "akita_black_bowl"   # LIBERO type (e.g. plate, wine_bottle). Omit for random.
+  # distractor_object_types: ["akita_black_bowl", "plate"]   # Or list: random choice per design point
 ```
+
+- **type** — `move` (translate one object) or `distract` (add distractor at position). Default `move`.
+- **object_names** — Required only for `type: move` (exactly one object). Ignored for `type: distract`.
+- **distractor_count** — For `type: distract`: number of distractors per design point (default 1).
+- **distractor_object_type** — For `type: distract`: single LIBERO object type for all distractors (e.g. `akita_black_bowl`, `plate`, `wine_bottle`). Omit to use random type.
+- **distractor_object_types** — For `type: distract`: list of types; one is chosen at random per design point. Ignored if `distractor_object_type` is set.
 
 If `bounds_x` / `bounds_z` are omitted, they default to `(-max_move_m, max_move_m)` from `perturbations.bddl_spatial.max_move_m`.
 
@@ -109,8 +129,8 @@ If `bounds_x` / `bounds_z` are omitted, they default to `(-max_move_m, max_move_
 
 In the run directory you get:
 
-- **`random_design_points.json`** — List of `{id, x, z}` for each design point (e.g. `rd_0`, `rd_1`, ...). The **x, z values are deltas** (m) from the object’s original BDDL center.
-- **`heatmap_metric_vs_translation.png`** — Heatmap of the GP-predicted VLA metric over **(x, z) absolute position** (original object center + delta). Axes are labeled “x position (m)” and “z position (m).”
+- **`random_design_points.json`** — List of `{id, x, z}` for each design point (e.g. `rd_0`, `rd_1`, ...). For **move**: x, z are **deltas** (m) from the object’s original BDDL center. For **distract**: x, z are the **absolute position** (m) of the distractor.
+- **`heatmap_metric_vs_translation.png`** — Heatmap of the GP-predicted VLA metric. For **move**: over (x, z) absolute position (original + delta); axes “x position (m)” and “z position (m)”. For **distract**: over distractor (x, z) position; same axis labels.
 
 Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, etc. Perturbation IDs are `unperturbed`, `control`, and `rd_0`, `rd_1`, ... for the random design points.
 
@@ -260,8 +280,8 @@ After a run (full or generate-only), the run directory looks like:
 run_dir/
 ├── main_config.yaml           # Copy of main config
 ├── perturbation_manifest.json  # List of perturbations and descriptions
-├── random_design_points.json   # (Random-design only) design points {id, x, z} (deltas in m)
-├── heatmap_metric_vs_translation.png  # (Random-design only) metric vs absolute (x,z) position
+├── random_design_points.json   # (Random-design only) design points {id, x, z}: deltas (move) or position (distract)
+├── heatmap_metric_vs_translation.png  # (Random-design only) metric vs (x,z) position
 ├── job_summary.json            # (After jobs) completed/failed counts
 ├── analysis_results.json       # (After evaluation) metrics
 ├── bddl_files/
