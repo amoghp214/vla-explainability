@@ -630,14 +630,21 @@ def add_distractor(bddl_text, target_workspace=None, position=None, object_type=
     bddl_text = bddl_text[:regions_end] + "\n" + region_def + "\n" + base_indent + bddl_text[regions_end:]
 
     # Add to :objects
+    # BDDL parser assigns each category one list; a second "inst - category" line overwrites the first.
+    # If obj_type already exists: add new_obj to that line (e.g. "wine_bottle_1 - wine_bottle" -> "wine_bottle_1 wine_bottle_456 - wine_bottle").
+    # If obj_type is not in the scene: append a new line "new_obj - obj_type".
     obj_pattern = r"(\(:objects\s*\n)((?:.*\n)*?)(\s*\))"
     obj_match = re.search(obj_pattern, bddl_text)
     if obj_match:
         obj_content = obj_match.group(2)
-        last_line = obj_content.rstrip().split('\n')[-1] if obj_content.strip() else ""
-        indent = re.match(r'^(\s*)', last_line).group(1) if last_line else "    "
-        new_content = obj_content + f"{indent}{new_obj} - {obj_type}\n"
-        bddl_text = bddl_text[:obj_match.start()] + obj_match.group(1) + new_content + obj_match.group(3) + bddl_text[obj_match.end():]
+        old_line = f" - {obj_type}\n"
+        if old_line in obj_content:
+            obj_content = obj_content.replace(old_line, f" {new_obj}{old_line}", 1)
+        else:
+            last_line = obj_content.rstrip().split("\n")[-1] if obj_content.strip() else ""
+            indent = re.match(r"^(\s*)", last_line).group(1) if last_line else "    "
+            obj_content = obj_content + f"{indent}{new_obj} - {obj_type}\n"
+        bddl_text = bddl_text[:obj_match.start()] + obj_match.group(1) + obj_content + obj_match.group(3) + bddl_text[obj_match.end():]
 
     # Add to :init
     init_pattern = r"(\(:init\s*\n)((?:.*\n)*?)(\s*\))"
