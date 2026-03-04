@@ -36,6 +36,7 @@ from scripts.pipeline.slurm import dispatch_batch
 from scripts.pipeline.generate_perturbations import generate_perturbations_from_config, save_perturbation_manifest
 from scripts.pipeline.render import render_videos
 from scripts.pipeline.evaluation import run_evaluation
+from scripts.pipeline.perturbation import read_bddl, get_object_centers_from_bddl
 from scripts.pipeline.random_design import (
     generate_random_design_perturbations,
     run_heatmap,
@@ -157,7 +158,22 @@ class Launcher:
         )
 
     def run_heatmap(self, bounds_x: Tuple[float, float], bounds_z: Tuple[float, float]) -> None:
-        """Build heatmap of VLA metric vs (x, z) translation from analysis results."""
+        """Build heatmap of VLA metric vs (x, z) translation from analysis results. Uses absolute positions (original + delta) when base BDDL and object are available."""
+        origin_x, origin_z = None, None
+        try:
+            base_bddl = Path(self.config["base_bddl_file"])
+            if not base_bddl.is_absolute():
+                base_bddl = PROJECT_ROOT / base_bddl
+            if base_bddl.exists():
+                base_bddl_text = read_bddl(str(base_bddl))
+                object_names = self.config.get("random_design", {}).get("object_names")
+                if object_names and len(object_names) >= 1:
+                    centers = get_object_centers_from_bddl(base_bddl_text, object_names)
+                    if object_names[0] in centers:
+                        cx, cz = centers[object_names[0]]
+                        origin_x, origin_z = float(cx), float(cz)
+        except Exception as e:
+            print(f"[WARN] Could not get object origin for absolute-position heatmap: {e}")
         run_heatmap(
             run_dir=self.run_dir,
             design_points=self.design_points,
@@ -167,6 +183,8 @@ class Launcher:
             model_name="SingleTaskGP",
             step=0.001,
             project_root=PROJECT_ROOT,
+            origin_x=origin_x,
+            origin_z=origin_z,
         )
 
     def run(self, generate_only: bool = False) -> None:

@@ -25,7 +25,7 @@ The system:
 
 1. **Generates perturbations** — Reads a base BDDL task, applies spatial and/or language perturbations, writes BDDL files and record configs. Init regions use a small fixed extent (`max_init_range_m`) so the env barely changes across runs and MuJoCo gets valid geom sizes.
 2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
-3. **Post-processes** — Renders videos from HDF5 recordings and runs evaluation (trajectory comparison, metrics).
+3. **Post-processes** — Optionally renders videos from HDF5 recordings (controlled by `render_videos` in config) and runs evaluation (trajectory comparison, metrics).
 
 You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally. A **random-design** mode generates random (x, z) translation perturbations, runs the pipeline, and produces a heatmap of the VLA metric vs translation (see [Random-design mode](#random-design-mode-metric-vs-translation-heatmap)).
 
@@ -48,7 +48,7 @@ Edit `configs/main.yaml`:
 python scripts/launcher.py --config configs/main.yaml
 ```
 
-This creates a timestamped run directory, generates all BDDL/configs, submits SLURM jobs, then runs video rendering and evaluation when jobs finish.
+This creates a timestamped run directory, generates all BDDL/configs, submits SLURM jobs, then runs optional video rendering and evaluation when jobs finish. Set `render_videos: false` in the config to skip rendering videos from HDF5s.
 
 ### 3. Generate only (no jobs)
 
@@ -64,7 +64,7 @@ Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
 
 ## Random-design mode (metric vs translation heatmap)
 
-Random-design treats **one perturbation run as one black-box evaluation**: the input is (x, z) translation (move) for a single object, and the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed). The launcher generates `n_design` random (x, z) points, dispatches record jobs, runs evaluation, fits a BoTorch GP, and saves a **heatmap of metric vs x, z translation**.
+Random-design treats **one perturbation run as one black-box evaluation**: the input is (x, z) **delta** translation (move) for a single object from its original BDDL position, and the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed). The launcher generates `n_design` random (dx, dz) deltas in the given bounds, places the object at **(original_center + dx, original_center + dz)**, dispatches record jobs, runs evaluation, fits a BoTorch GP, and saves a **heatmap of metric vs absolute (x, z) position** (i.e. original object position + delta).
 
 ### Usage
 
@@ -109,8 +109,8 @@ If `bounds_x` / `bounds_z` are omitted, they default to `(-max_move_m, max_move_
 
 In the run directory you get:
 
-- **`random_design_points.json`** — List of `{id, x, z}` for each design point (e.g. `rd_0`, `rd_1`, ...).
-- **`heatmap_metric_vs_translation.png`** — Heatmap of the GP-predicted VLA metric over (x, z) after evaluation.
+- **`random_design_points.json`** — List of `{id, x, z}` for each design point (e.g. `rd_0`, `rd_1`, ...). The **x, z values are deltas** (m) from the object’s original BDDL center.
+- **`heatmap_metric_vs_translation.png`** — Heatmap of the GP-predicted VLA metric over **(x, z) absolute position** (original object center + delta). Axes are labeled “x position (m)” and “z position (m).”
 
 Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, etc. Perturbation IDs are `unperturbed`, `control`, and `rd_0`, `rd_1`, ... for the random design points.
 
@@ -127,6 +127,12 @@ Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, e
 | `base_bddl_file` | Path to base BDDL (relative to project root or absolute) |
 | `base_prompt` | Task instruction text |
 | `action_scale`, `num_demos`, `noise_std` | Recording options |
+
+### Video rendering
+
+| Key | Description |
+|-----|-------------|
+| `render_videos` | If `true` (default), render videos from HDF5 files after recording (via `playback.py`). If `false`, skip video rendering in the pipeline. |
 
 ### Perturbations
 
@@ -254,8 +260,8 @@ After a run (full or generate-only), the run directory looks like:
 run_dir/
 ├── main_config.yaml           # Copy of main config
 ├── perturbation_manifest.json  # List of perturbations and descriptions
-├── random_design_points.json   # (Random-design only) design points {id, x, z}
-├── heatmap_metric_vs_translation.png  # (Random-design only) metric vs x,z heatmap
+├── random_design_points.json   # (Random-design only) design points {id, x, z} (deltas in m)
+├── heatmap_metric_vs_translation.png  # (Random-design only) metric vs absolute (x,z) position
 ├── job_summary.json            # (After jobs) completed/failed counts
 ├── analysis_results.json       # (After evaluation) metrics
 ├── bddl_files/

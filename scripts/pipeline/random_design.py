@@ -20,6 +20,7 @@ from .perturbation import (
     fix_init_ranges,
     params_to_move_spec_dict,
     apply_single_perturbation,
+    get_object_centers_from_bddl,
 )
 from .configs import write_record_config
 
@@ -40,13 +41,12 @@ def generate_random_design_perturbations(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Generate unperturbed + optional control + n_design random (x, z) move perturbations.
-
-    Uses params_to_move_spec_dict with {"x": x, "z": z}, so object_names must have
-    exactly one object (table-plane coords x, z).
+    Samples deltas (dx, dz) in bounds and places the object at (original_center + dx, original_center + dz).
+    design_points store (x, z) as deltas so the heatmap can plot absolute positions (original + delta).
 
     Returns:
         perturbation_info: List of dicts (id, bddl_file, config_file, prompt, ...).
-        design_points: List of dicts (id, x, z) for each random design point (rd_0, rd_1, ...).
+        design_points: List of dicts (id, x, z) with x, z as deltas (m) from original object center.
     """
     if len(object_names) != 1:
         raise ValueError("Random design with x/z bounds requires exactly one object in object_names")
@@ -115,10 +115,14 @@ def generate_random_design_perturbations(
             "description": "Control (no BDDL change)",
         })
 
-    # Random design points: (x, z) in bounds
+    # Random design points: sample deltas (dx, dz) in bounds; place object at (cx+dx, cz+dz)
     x_low, x_high = bounds_x
     z_low, z_high = bounds_z
     perturbations = {"move": list(object_names)}
+    centers = get_object_centers_from_bddl(base_bddl_text, object_names)
+    if object_names[0] not in centers:
+        raise ValueError(f"Object {object_names[0]} not found in base BDDL region map; cannot compute absolute positions.")
+    cx, cz = centers[object_names[0]]
 
     if (uniform):
         xz_ratio = (x_high - x_low) / (z_high - z_low)
@@ -139,7 +143,9 @@ def generate_random_design_perturbations(
             x = float(np.random.uniform(x_low, x_high))
             z = float(np.random.uniform(z_low, z_high))
         pert_id = f"rd_{i}"
-        spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x, "z": z})
+        # Place object at absolute position (original + delta)
+        x_abs, z_abs = cx + x, cz + z
+        spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "z": z_abs})
         try:
             perturbed_bddl = apply_single_perturbation(
                 copy.deepcopy(base_bddl_text),
@@ -150,7 +156,7 @@ def generate_random_design_perturbations(
                 max_move_m=max_move_m,
             )
         except Exception as e:
-            print(f"[WARN] Random design point {pert_id} (x={x:.4f}, z={z:.4f}) failed: {e}")
+            print(f"[WARN] Random design point {pert_id} (dx={x:.4f}, dz={z:.4f}) failed: {e}")
             continue
         pert_bddl_path = bddl_dir / f"{pert_id}.bddl"
         with open(pert_bddl_path, "w") as f:
@@ -168,7 +174,7 @@ def generate_random_design_perturbations(
             "config_file": str(config_path),
             "prompt": base_prompt,
             "type": "random_design_move",
-            "description": f"Move {object_names[0]} to (x={x:.4f}, z={z:.4f})",
+            "description": f"Move {object_names[0]} to (x={x_abs:.4f}, z={z_abs:.4f}) [delta=({x:.4f}, {z:.4f})]",
             "x": x,
             "z": z,
         })
@@ -186,9 +192,13 @@ def run_heatmap(
     model_name: str = "SingleTaskGP",
     step: float = 0.02,
     project_root: Optional[Path] = None,
+    origin_x: Optional[float] = None,
+    origin_z: Optional[float] = None,
 ) -> Path:
     """
     Load analysis results and design points, fit BoTorch GP, plot heatmap of metric vs x, z.
+    If origin_x and origin_z are provided, (x, z) in design_points are treated as deltas and
+    the heatmap plots absolute positions (original + delta). Otherwise (x, z) are plotted as-is.
     Saves heatmap to run_dir / "heatmap_metric_vs_translation.png" and returns that path.
     """
     project_root = project_root or PROJECT_ROOT
@@ -207,13 +217,22 @@ def run_heatmap(
         r = results.get(pid)
         if r is None or "error" in r or "metric" not in r:
             continue
-        X_list.append([x, z])
+        # Plot absolute position (original + delta) when origin is provided
+        if origin_x is not None and origin_z is not None:
+            x_plot = origin_x + x
+            z_plot = origin_z + z
+        else:
+            x_plot, z_plot = x, z
+        X_list.append([x_plot, z_plot])
         Y_list.append(r["metric"])
-    
-    # Get results from control perturbation
+
+    # Get results from control perturbation (delta 0,0 -> absolute = origin when origin set)
     assert "control" in results, "Control results not found in analysis results"
     assert "metric" in results["control"], "Control metric not found in analysis results"
-    X_list.append([0.0, 0.0])  # Control is at (0, 0) translation
+    if origin_x is not None and origin_z is not None:
+        X_list.append([origin_x + 0.0, origin_z + 0.0])
+    else:
+        X_list.append([0.0, 0.0])
     Y_list.append(results["control"]["metric"])
 
     if len(X_list) < 2:
@@ -224,10 +243,16 @@ def run_heatmap(
     train_X = torch.from_numpy(train_X_np).double()
     train_Y = torch.from_numpy(train_Y_np).double()
 
+    bounds_x_passed = bounds_x is not None
+    bounds_z_passed = bounds_z is not None
     if bounds_x is None:
         bounds_x = (float(train_X_np[:, 0].min()), float(train_X_np[:, 0].max()))
     if bounds_z is None:
         bounds_z = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
+    # When using absolute positions, convert passed-in (delta) bounds to absolute; data-derived bounds are already absolute
+    if origin_x is not None and origin_z is not None and bounds_x_passed and bounds_z_passed:
+        bounds_x = (origin_x + bounds_x[0], origin_x + bounds_x[1])
+        bounds_z = (origin_z + bounds_z[0], origin_z + bounds_z[1])
     bounds_dict = {"x": bounds_x, "z": bounds_z}
 
     # Normalize to [0, 1] for GP (BoTorch convention in botorch_random_demo)
@@ -258,18 +283,25 @@ def run_heatmap(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 5))
+    title = "VLA metric vs (x, z) translation - RMSE: {:.4f}".format(rmse)
+    if origin_x is not None and origin_z is not None:
+        title = "VLA metric vs (x, z) absolute position - RMSE: {:.4f}".format(rmse)
     plot_heatmap_fn(
         bounds_dict,
         model,
         train_X_norm,
         train_Y,
-        f"VLA metric vs (x, z) translation - RMSE: {rmse:.4f}",
+        title,
         step=step,
         cmap="RdBu_r",
         ax=ax,
     )
-    ax.set_xlabel("x translation (m)")
-    ax.set_ylabel("z translation (m)")
+    if origin_x is not None and origin_z is not None:
+        ax.set_xlabel("x position (m)")
+        ax.set_ylabel("z position (m)")
+    else:
+        ax.set_xlabel("x translation (m)")
+        ax.set_ylabel("z translation (m)")
     plt.savefig(str(out_path), bbox_inches="tight")
     plt.close()
     print(f"[INFO] Saved heatmap to {out_path}")

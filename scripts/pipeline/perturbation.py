@@ -61,6 +61,15 @@ def _get_object_centers_from_bddl(bddl_text: str, object_names: List[str]) -> Di
     return centers
 
 
+def get_object_centers_from_bddl(bddl_text: str, object_names: List[str]) -> Dict[str, tuple]:
+    """
+    Public wrapper for _get_object_centers_from_bddl.
+    Get (cx, cz) for each object from base BDDL region ranges.
+    Returns dict {object_name: (cx, cz)}.
+    """
+    return _get_object_centers_from_bddl(bddl_text, object_names)
+
+
 def params_to_move_spec_dict(
     base_bddl_text: str,
     object_names: List[str],
