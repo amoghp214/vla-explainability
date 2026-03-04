@@ -26,19 +26,24 @@ def save_bddl(content, base_name="perturbed_scene", folder="perturbed_bddl"):
 # --------------------------
 
 def extract_declared_objects(bddl_text):
-    """Extract all objects declared in :objects section."""
+    """Extract all objects declared in :objects section.
+    Supports both "inst - category" and "inst1 inst2 ... - category" per line.
+    """
     obj_pattern = r":objects\s*\n((?:.*\n)*?)\s*\)"
     match = re.search(obj_pattern, bddl_text, re.MULTILINE)
     if not match:
         return set()
-    
+
     objects = set()
     content = match.group(1)
-    # Match lines like "akita_black_bowl_1 - akita_black_bowl"
-    for line in content.strip().split('\n'):
-        obj_match = re.match(r'\s*(\w+)\s*-\s*(\w+)', line)
-        if obj_match:
-            objects.add(obj_match.group(1))
+    for line in content.strip().split("\n"):
+        # Line format: "inst - category" or "inst1 inst2 inst3 - category"
+        if " - " not in line:
+            continue
+        left, _category = line.strip().rsplit(" - ", 1)
+        for part in left.split():
+            if part and part != "-":
+                objects.add(part)
     return objects
 
 def extract_fixture_objects(bddl_text):
