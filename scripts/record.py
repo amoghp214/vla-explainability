@@ -468,7 +468,8 @@ def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
     for frame in frames:
-        writer.write(frame)
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        writer.write(frame_bgr)
     writer.release()
     print(f"  ✓ Saved video: {output_path} ({len(frames)} frames)")
 
@@ -570,7 +571,7 @@ def record_demo(config: Dict[str, Any]):
     # ---- Save videos ----
     record_path = config["record_path"]
     video_dir = os.path.dirname(record_path)
-    video_base = os.path.splitext(os.path.basename(record_path))[0]
+    video_base = "video"
 
     print(f"\nSaving {num_demos} video(s)...")
     for demo_idx, demo_data in enumerate(all_demos):
