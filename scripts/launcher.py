@@ -180,7 +180,8 @@ class Launcher:
         print(f"Run directory: {self.run_dir}")
         self.generate_perturbations()
         self.dispatch_jobs()
-        self.render_videos() # NOTE: hide this with a flag
+        if self.config.get("render_videos", True):
+            self.render_videos()
         self.run_evaluation()
         print("\n" + "=" * 80)
         print("Pipeline complete!")
@@ -216,7 +217,8 @@ class Launcher:
             self._print_random_design_instructions()
             return
         self.dispatch_jobs()
-        self.render_videos()
+        if self.config.get("render_videos", True):
+            self.render_videos()
         eval_config = self.config.get("evaluation", {})
         if not eval_config.get("enabled", False):
             print("[INFO] Evaluation was disabled in config; enabling for random-design heatmap.")

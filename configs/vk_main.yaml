@@ -17,7 +17,7 @@ base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
 
 # Recording parameters
 action_scale: 1.0
-num_demos: 10  # Number of demonstrations to record per perturbation
+num_demos: 2  # Number of demonstrations to record per perturbation
 noise_std: 0.001  # Gaussian noise std deviation for action deltas
 
 # =============================================================================
@@ -101,6 +101,13 @@ slurm:
 run_base_dir: null
 
 # =============================================================================
+# Video playback / rendering
+# =============================================================================
+# If true, render videos from HDF5 files after recording (via playback.py).
+# If false, skip video rendering in the pipeline.
+render_videos: true
+
+# =============================================================================
 # Bayesian Optimization (optional)
 # =============================================================================
 # Used by: python -m explainability.vla_bayesian_optimization --config configs/main.yaml
@@ -118,7 +125,7 @@ run_base_dir: null
 # Generates n_design random (x, z) translation perturbations, runs record jobs,
 # computes VLA metric per point, fits GP and saves heatmap to run_dir.
 random_design:
-  n_design: 50
+  n_design: 10
   seed: 1
   bounds_x: [-0.1, 0.1]   # x translation range (m)
   bounds_z: [-0.1, 0.1]   # z translation range (m)
