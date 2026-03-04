@@ -38,6 +38,7 @@ from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
 from gpytorch.mlls import ExactMarginalLogLikelihood, VariationalELBO
+from gpytorch.kernels import RBFKernel, MaternKernel, ScaleKernel, SpectralMixtureKernel, RQKernel
 
 try:
     from botorch.models import HeteroskedasticSingleTaskGP
@@ -107,13 +108,33 @@ def build_and_fit_model(
     train_X_norm: torch.Tensor,
     train_Y: torch.Tensor,
     d: int,
+    kernel_name: str = "",
 ) -> Any:
     """
     Build and fit a BoTorch model. Inputs are in [0,1]^d; uses Normalize and Standardize.
+    Accepts kernel_name to manually select the gpytorch kernel used.
     Returns the fitted model (with .posterior(X)).
     """
+    def _make_kernel(name: str, dim: int):
+        n = (name or "").lower()
+        if n in ("matern1.5", "matern15"):
+            base = MaternKernel(nu=1.5, ard_num_dims=dim)
+        elif n in ("matern2.5", "matern25"):
+            base = MaternKernel(nu=2.5, ard_num_dims=dim)
+        elif n in ("rq", "rationalquadratic"):
+            base = RQKernel(ard_num_dims=dim)
+        elif n in ("sm", "spectralmixture", "spectral_mixture"):
+            # spectral mixture needs num_mixtures; keep small default
+            return ScaleKernel(SpectralMixtureKernel(num_mixtures=4, ard_num_dims=dim))
+        else:
+            # default to RBF (squared exponential)
+            base = RBFKernel(ard_num_dims=dim)
+        return ScaleKernel(base)
+
     norm_bounds = torch.stack([torch.zeros(d), torch.ones(d)]).double()
 
+    gp = None
+    # Build model
     if model_name == "SingleTaskGP":
         gp = SingleTaskGP(
             train_X=train_X_norm,
@@ -141,9 +162,6 @@ def build_and_fit_model(
             input_transform=Normalize(d=d, bounds=norm_bounds),
             outcome_transform=Standardize(m=1),
         )
-        mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
-        fit_gpytorch_mll(mll)
-        return gp
 
     elif model_name == "SingleTaskVariationalGP" and _HAS_VARIATIONAL:
         gp = SingleTaskVariationalGP(
@@ -152,9 +170,6 @@ def build_and_fit_model(
             input_transform=Normalize(d=d, bounds=norm_bounds),
             outcome_transform=Standardize(m=1),
         )
-        mll = VariationalELBO(gp.likelihood, gp.model, num_data=train_X_norm.shape[-2])
-        fit_gpytorch_mll(mll)
-        return gp
 
     elif model_name == "SaasFullyBayesianSingleTaskGP" and _HAS_SAAS:
         # NUTS often uses float32; use float for compatibility
@@ -183,8 +198,21 @@ def build_and_fit_model(
             available.append("SaasFullyBayesianSingleTaskGP")
         raise ValueError(f"Unknown model: {model_name}. Available: {available}")
 
-    mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+    # assign chosen kernel (try to attach to gp or gp.model)
+    kernel = _make_kernel(kernel_name, d) if kernel_name else None
+    if kernel is not None:
+        if hasattr(gp, "covar_module"):
+            gp.covar_module = kernel
+        elif hasattr(gp, "model") and hasattr(gp.model, "covar_module"):
+            gp.model.covar_module = kernel
+    # Fit model using the appropriate marginal/variational objective
+    if model_name == "SingleTaskVariationalGP" and _HAS_VARIATIONAL:
+        mll = VariationalELBO(gp.likelihood, gp.model, num_data=train_X_norm.shape[-2])
+    else:
+        mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+    
     fit_gpytorch_mll(mll)
+
     return gp
 
 
