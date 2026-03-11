@@ -75,7 +75,8 @@ def run_analysis(
     output_file: str,
     metric_weights: Dict[str, float],
     trajectory_weights: List[float],
-    project_root: str = None
+    project_root: str = None,
+    visualize_trajectories: bool = True
 ) -> Dict[str, Any]:
     """
     Run trajectory analysis comparing unperturbed and perturbed episodes.
@@ -131,7 +132,7 @@ def run_analysis(
             perturbed_lengths = torch.tensor([len(t) for t in perturbed_trajs]).float()
             
             # Calculate metric
-            metric, success_metric, time_metric, trajectory_metric = calculate_vla_metric(
+            metric, success_rate, success_metric, time_metric, trajectory_metric = calculate_vla_metric(
                 unperturbed_episode_results=unperturbed_results,
                 perturbed_episode_results=perturbed_results,
                 unperturbed_episode_lengths=unperturbed_lengths,
@@ -146,56 +147,58 @@ def run_analysis(
             )
             
             # Generate trajectory visualizations
-            # Find best matching pair using Wasserstein distance
-            # TODO: Is this incomplete? Are we using first pair instead of best
-            if len(unperturbed_trajs) > 0 and len(perturbed_trajs) > 0:
-                # Calculate distance matrix to find best match
-                distance_matrix = get_dtw_trajectory_distance_matrix(
-                    unperturbed_trajs, perturbed_trajs, traj_weights
-                )
-                
-                # Use first trajectory pair for visualization (or best match)
-                # For simplicity, use first unperturbed and first perturbed
-                # In practice, you might want to use the optimal assignment
-                unpert_traj = unperturbed_trajs[0]
-                pert_traj = perturbed_trajs[0]
-                
-                # Calculate DTW with triangles for visualization
-                try:
-                    dtw_area, warp_path, triangles = calculate_dtw_trajectory_difference(
-                        unpert_traj, pert_traj, traj_weights
+            if visualize_trajectories:
+                # Find best matching pair using Wasserstein distance
+                # TODO: Is this incomplete? Are we using first pair instead of best
+                if len(unperturbed_trajs) > 0 and len(perturbed_trajs) > 0:
+                    # Calculate distance matrix to find best match
+                    distance_matrix = get_dtw_trajectory_distance_matrix(
+                        unperturbed_trajs, perturbed_trajs, traj_weights
                     )
                     
-                    # Convert warp_path to lines for visualization
-                    lines = None
-                    if warp_path is not None and len(warp_path) > 0:
-                        # Create lines connecting matched points in warp path
-                        lines = []
-                        for i in range(len(warp_path)):
-                            idx1, idx2 = warp_path[i]
-                            # Create line segment connecting consecutive matched points
-                            # Line from unperturbed point to next matched perturbed point
-                            line = np.array([
-                                unpert_traj[idx1, :3],  # Start: XYZ from unperturbed
-                                pert_traj[idx2, :3]  # End: XYZ from perturbed
-                            ])
-                            lines.append(line)
-                        if lines:
-                            lines = np.array(lines)
+                    # Use first trajectory pair for visualization (or best match)
+                    # For simplicity, use first unperturbed and first perturbed
+                    # In practice, you might want to use the optimal assignment
+                    unpert_traj = unperturbed_trajs[0]
+                    pert_traj = perturbed_trajs[0]
                     
-                    # Generate visualization
-                    viz_file = viz_dir / f"{pert_id}_trajectory_diff.html"
-                    visualize_trajectory_difference(
-                        unpert_traj, pert_traj, 
-                        triangles=triangles, 
-                        lines=lines,
-                        output_file=str(viz_file)
-                    )
-                    print(f"  Generated visualization: {viz_file}")
-                except Exception as viz_e:
-                    print(f"  Warning: Could not generate visualization: {viz_e}")
+                    # Calculate DTW with triangles for visualization
+                    try:
+                        dtw_area, warp_path, triangles = calculate_dtw_trajectory_difference(
+                            unpert_traj, pert_traj, traj_weights
+                        )
+                        
+                        # Convert warp_path to lines for visualization
+                        lines = None
+                        if warp_path is not None and len(warp_path) > 0:
+                            # Create lines connecting matched points in warp path
+                            lines = []
+                            for i in range(len(warp_path)):
+                                idx1, idx2 = warp_path[i]
+                                # Create line segment connecting consecutive matched points
+                                # Line from unperturbed point to next matched perturbed point
+                                line = np.array([
+                                    unpert_traj[idx1, :3],  # Start: XYZ from unperturbed
+                                    pert_traj[idx2, :3]  # End: XYZ from perturbed
+                                ])
+                                lines.append(line)
+                            if lines:
+                                lines = np.array(lines)
+                        
+                        # Generate visualization
+                        viz_file = viz_dir / f"{pert_id}_trajectory_diff.html"
+                        visualize_trajectory_difference(
+                            unpert_traj, pert_traj, 
+                            triangles=triangles, 
+                            lines=lines,
+                            output_file=str(viz_file)
+                        )
+                        print(f"  Generated visualization: {viz_file}")
+                    except Exception as viz_e:
+                        print(f"  Warning: Could not generate visualization: {viz_e}")
             
             results[pert_id] = {
+                'success_rate': float(success_rate),
                 'success_metric': float(success_metric),
                 'time_metric': float(time_metric),
                 'trajectory_metric': float(trajectory_metric),
@@ -275,6 +278,12 @@ def main():
         default=None,
         help="Project root directory (defaults to parent of script directory)"
     )
+
+    parser.add_argument(
+        "--visualize-trajectories",
+        action='store_true',
+        help="Whether to generate trajectory visualizations"
+    )
     
     args = parser.parse_args()
     
@@ -301,7 +310,7 @@ def main():
             trajectory_weights = json.loads(args.trajectory_weights)
     else:
         trajectory_weights = [1.0, 1.0, 1.0, 0.2, 0.2, 0.2, 0.2, 0.5]
-    
+
     # Run analysis
     run_analysis(
         unperturbed_file=args.unperturbed,
@@ -310,7 +319,8 @@ def main():
         output_file=args.output,
         metric_weights=metric_weights,
         trajectory_weights=trajectory_weights,
-        project_root=args.project_root
+        project_root=args.project_root,
+        visualize_trajectories=args.visualize_trajectories
     )
 
 

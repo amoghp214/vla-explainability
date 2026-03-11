@@ -256,9 +256,9 @@ def record_demo(config):
         print(f"Recording demo {demo_idx + 1}/{num_demos}")
         print(f"{'='*60}")
         
-        # Use different seed for each demo
-        # seed = demo_idx
-        seed = np.random.randint(0, 10000)  # Random seed for each demo
+        # Use different seed for each demo - ensure control and unperturbed have different seeds
+        seed = demo_idx + (1000 if "unperturbed" in config["bddl_file"] else 0)
+        # seed = np.random.randint(0, 10000)  # Random seed for each demo
         demo_data = record_single_demo(env, processor, vla, config, demo_idx, seed)
         all_demos.append(demo_data)
     

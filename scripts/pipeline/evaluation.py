@@ -44,8 +44,11 @@ def run_analysis_subprocess(
         "--trajectory-weights",
         json.dumps(eval_config["trajectory_weights"]),
         "--project-root",
-        str(project_root),
+        str(project_root)
     ]
+    if eval_config.get("visualize_trajectories", False):
+        cmd.append("--visualize-trajectories")
+    
     subprocess.run(cmd, check=True)
 
 
