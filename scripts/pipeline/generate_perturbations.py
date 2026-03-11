@@ -68,7 +68,7 @@ def _generate_bddl_spatial_perturbations(
             )
 
         try:
-            perturbed_bddl = apply_perturbations(
+            perturbed_bddl, _z_overrides = apply_perturbations(
                 copy.deepcopy(base_bddl_text),
                 perturbations,
                 init_object_range_m=init_object_range_m,

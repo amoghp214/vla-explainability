@@ -132,7 +132,7 @@ def apply_single_perturbation(
     Returns:
         Perturbed BDDL text. Raises if validation fails (caller can catch).
     """
-    perturbed = apply_perturbations(
+    perturbed, _ = apply_perturbations(
         copy.deepcopy(base_bddl_text),
         perturbations,
         init_object_range_m=init_object_range_m,
