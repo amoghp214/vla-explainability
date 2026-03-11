@@ -158,18 +158,23 @@ run_base_dir: null
 #   n_iter: 10
 
 # =============================================================================
-# Random design (BoTorch heatmap) - optional
+# Random design (temporal + BoTorch heatmap)
 # =============================================================================
-# Used by: python scripts/launcher.py --config configs/main.yaml --random-design
-# Generates n_design random (x, z) translation perturbations, runs record jobs,
-# computes VLA metric per point, fits GP and saves heatmap to run_dir.
+# With --random-design: n+2 BDDL files (unperturbed, control, rd_0..rd_{n-1}). Each rd_i uses
+# its own BDDL and temporal perturbation at perturbation_start_step/perturbation_stop_step.
 random_design:
+  type: move
   n_design: 120
   seed: 100
-  bounds_x: [-0.1, 0.1]   # x translation range (m)
-  bounds_z: [-0.1, 0.1]   # z translation range (m)
-  object_names: ["akita_black_bowl_1"]   # exactly one object for x/z mode
+  bounds_x: [-0.1, 0.1]
+  bounds_z: [-0.1, 0.1]
+  object_names: ["akita_black_bowl_1"]
   uniform: true
+
+# When using --random-design: temporal window and max move (m)
+perturbation_start_step: 0
+perturbation_stop_step: 99999
+max_move_m: 0.05
 
 # =============================================================================
 # Evaluation Configuration

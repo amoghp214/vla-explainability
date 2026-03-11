@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
 """
-Launcher script for pipelined perturbed dataset generation in PACE-ICE environment.
+Launcher for random-design pipeline: n+2 BDDL files, SLURM record jobs, evaluation, BO heatmap.
 
-This script:
-1. Creates a run directory structure in scratch folder
-2. Generates perturbation files (BDDL and config YAMLs)
-3. Dispatches SLURM jobs in a queue-like fashion
-4. Runs evaluation scripts after all jobs complete
-
-Temporal (mid-rollout) perturbations from the main config (temporal_perturbations and
-hidden_objects) are forwarded to every generated record config, so all launcher flows
-(full pipeline, random-design, generate-only) use them when recording. Use start_step: 0
-and end_step: 99999 for a perturbation that lasts the full rollout.
+Workflow (--random-design):
+  1. Generate unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl (n+2 BDDL files).
+     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, z_i).
+  2. Generate one YAML per run; each rd_i.yaml points to rd_i.bddl and sets temporal_perturbations
+     at perturbation_start_step/perturbation_stop_step so the move is applied during recording.
+  3. Dispatch SLURM jobs (record.py). Videos are rendered inside record.py.
+  4. After jobs complete, run evaluation (no separate playback/render step).
+  5. Fit BO and save heatmap: axes = absolute perturbation position (m), color = VLA metric.
 
 Usage:
-    # Full pipeline (generate + SLURM jobs + videos + evaluation):
-    python scripts/launcher.py --config configs/main.yaml
-
-    # Random-design mode: random (x, z) translation perturbations -> VLA metric -> heatmap:
-    python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20 --bounds -0.05,0.05
-
-    # Local tryout: only generate perturbations, then record one config by hand:
-    python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
-    python scripts/record.py --config ./local_run/configs/perturbed_0.yaml
+    python scripts/launcher.py --config configs/vk_main.yaml --random-design
 """
 
 import json
@@ -67,8 +57,8 @@ class Launcher:
 
         print(f"[INFO] Run directory: {self.run_dir}")
 
-    def _create_record_config_fn(self, perturbation_id: str, bddl_file: str, prompt: str):
-        """Bound create_record_config for pipeline callback."""
+    def _create_record_config_fn(self, perturbation_id: str, bddl_file: str, prompt: str, **kwargs):
+        """Bound create_record_config for pipeline callback. kwargs (e.g. temporal_perturbations_override) passed through."""
         return pipeline_create_record_config(
             perturbation_id=perturbation_id,
             bddl_file=bddl_file,
@@ -76,6 +66,7 @@ class Launcher:
             config=self.config,
             results_dir=self.results_dir,
             config_dir=self.config_dir,
+            **kwargs,
         )
 
     def generate_perturbations(self) -> None:

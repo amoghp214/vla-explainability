@@ -7,7 +7,7 @@ device, cache_dir, bddl_file, prompt, out_file, record_path, action_scale, num_d
 
 import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 
 def create_record_config(
@@ -17,6 +17,7 @@ def create_record_config(
     config: Dict[str, Any],
     results_dir: Path,
     config_dir: Path,
+    temporal_perturbations_override: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Create a record config dict for a perturbation (for record.py).
@@ -28,6 +29,8 @@ def create_record_config(
         config: Main YAML config (model, device, cache_dir, etc.).
         results_dir: Run's results directory (for out_file and videos).
         config_dir: Run's config directory (used to resolve relative bddl_file if needed).
+        temporal_perturbations_override: If set, use this instead of config["temporal_perturbations"]
+            (used by random_design to inject per-point temporal specs).
 
     Returns:
         Config dict suitable for record.py and yaml.dump.
@@ -55,7 +58,11 @@ def create_record_config(
     }
     # Always forward temporal (mid-rollout) perturbation config so all launcher paths use it.
     # Use first frame (start_step: 0) for full-rollout; use large end_step (e.g. 99999) for "until episode end".
-    record_config["temporal_perturbations"] = config.get("temporal_perturbations", [])
+    record_config["temporal_perturbations"] = (
+        temporal_perturbations_override
+        if temporal_perturbations_override is not None
+        else config.get("temporal_perturbations", [])
+    )
     record_config["hidden_objects"] = config.get("hidden_objects", [])
     if config.get("target_workspace") is not None:
         record_config["target_workspace"] = config["target_workspace"]

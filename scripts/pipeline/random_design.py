@@ -1,9 +1,8 @@
 """
-Random-design pipeline: generate random (x, z) translation or distractor-position perturbations,
-dispatch jobs, run VLA metric as black box, produce heatmap of metric vs x, z.
-
-Supports two modes: "move" (translate one object by delta from original) and "distract" (add one
-distractor at (x, z) position). Uses pipeline modules for BDDL/config generation and SLURM.
+Random-design pipeline: n_design perturbation BDDL files (rd_0.bddl .. rd_{n-1}.bddl) plus
+unperturbed and control (n+2 BDDL files). During recording, temporal perturbation is applied
+at start_step/end_step from config. After jobs complete, evaluation runs and BO heatmap is
+produced with absolute perturbation positions on axes and VLA metric as heat color.
 """
 
 import json
@@ -25,12 +24,36 @@ from .perturbation import (
 from .configs import write_record_config
 
 
+def _temporal_spec_from_config(config: Dict[str, Any], design_type: str) -> Dict[str, Any]:
+    """Build temporal spec template: start_step, end_step from config; type, obj_name/distractor_obj_name, max_move_m."""
+    temporal = config.get("temporal_perturbations") or []
+    for spec in temporal:
+        if spec.get("type") == design_type:
+            out = copy.deepcopy(spec)
+            if "perturbation_start_step" in config:
+                out["start_step"] = int(config["perturbation_start_step"])
+            if "perturbation_stop_step" in config:
+                out["end_step"] = int(config["perturbation_stop_step"])
+            return out
+    start = int(config.get("perturbation_start_step", config.get("start_step", 0)))
+    end = int(config.get("perturbation_stop_step", config.get("end_step", 99999)))
+    rd = config.get("random_design", {})
+    max_move_m = float(config.get("max_move_m", rd.get("max_move_m", 0.05)))
+    if design_type == "move":
+        obj = (rd.get("object_names") or config.get("object_names") or ["akita_black_bowl_1"])[0]
+        return {"type": "move", "obj_name": obj, "start_step": start, "end_step": end, "max_move_m": max_move_m}
+    hidden = config.get("hidden_objects") or []
+    if not hidden:
+        raise ValueError("Random design type 'distract' requires hidden_objects in config.")
+    return {"type": "distractor", "distractor_obj_name": hidden[0]["name"], "start_step": start, "end_step": end}
+
+
 def generate_random_design_perturbations(
     config: Dict[str, Any],
     bddl_dir: Path,
     config_dir: Path,
     results_dir: Path,
-    create_record_config_fn: Callable[[str, str, str], Dict],
+    create_record_config_fn: Callable[..., Dict],
     n_design: int,
     bounds_x: Tuple[float, float],
     bounds_z: Tuple[float, float],
@@ -44,18 +67,10 @@ def generate_random_design_perturbations(
     distractor_object_types: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Generate unperturbed + optional control + n_design random design points.
-
-    design_type "move": Sample deltas (dx, dz) in bounds; place object at (original_center + dx, dz).
-    design_points store (x, z) as deltas. Requires object_names with exactly one object.
-
-    design_type "distract": Sample (x, z) positions in bounds; add distractor_count distractor(s)
-    at that position. design_points store (x, z) as absolute position. object_names ignored.
-    Use distractor_object_type (single type) or distractor_object_types (list; random choice per point) to set distractor object.
-
-    Returns:
-        perturbation_info: List of dicts (id, bddl_file, config_file, prompt, ...).
-        design_points: List of dicts (id, x, z). For move: deltas; for distract: absolute position.
+    Generate unperturbed + control + n_design design points. Produces n+2 BDDL files:
+    unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl. Each rd_i has its own BDDL
+    (object or distractor at (x_i, z_i)) and rd_i.yaml with temporal_perturbations at
+    start_step/end_step so the same perturbation is applied during recording.
     """
     if design_type not in ("move", "distract"):
         raise ValueError(f"design_type must be 'move' or 'distract', got {design_type!r}")
@@ -76,7 +91,7 @@ def generate_random_design_perturbations(
     pert_config = config.get("perturbations", {}).get("bddl_spatial", {})
     init_object_range_m = config.get("init_object_range_m", pert_config.get("init_object_range_m", 0.0))
     max_init_range_m = pert_config.get("max_init_range_m", 0.001)
-    max_move_m = pert_config.get("max_move_m", 0.05)
+    max_move_m = config.get("max_move_m", pert_config.get("max_move_m", 0.05))
     base_bddl_text = fix_init_ranges(
         base_bddl_text,
         init_object_range_m=init_object_range_m,
@@ -84,28 +99,26 @@ def generate_random_design_perturbations(
     )
 
     base_prompt = config["base_prompt"]
-
-    # Unperturbed
     unperturbed_bddl_path = bddl_dir / "unperturbed.bddl"
     with open(unperturbed_bddl_path, "w") as f:
         f.write(base_bddl_text)
+
     unperturbed_config = create_record_config_fn(
         perturbation_id="unperturbed",
         bddl_file=str(unperturbed_bddl_path),
         prompt=base_prompt,
+        temporal_perturbations_override=[],
     )
-    unperturbed_config_path = config_dir / "unperturbed.yaml"
-    write_record_config(unperturbed_config, unperturbed_config_path)
+    write_record_config(unperturbed_config, config_dir / "unperturbed.yaml")
     perturbation_info.append({
         "id": "unperturbed",
         "bddl_file": str(unperturbed_bddl_path),
-        "config_file": str(unperturbed_config_path),
+        "config_file": str(config_dir / "unperturbed.yaml"),
         "prompt": base_prompt,
         "type": "baseline",
         "description": "Baseline unperturbed task",
     })
 
-    # Control (same BDDL as unperturbed, for run_analysis)
     if include_control:
         control_bddl_path = bddl_dir / "control.bddl"
         with open(control_bddl_path, "w") as f:
@@ -114,46 +127,46 @@ def generate_random_design_perturbations(
             perturbation_id="control",
             bddl_file=str(control_bddl_path),
             prompt=base_prompt,
+            temporal_perturbations_override=[],
         )
-        control_config_path = config_dir / "control.yaml"
-        write_record_config(control_config, control_config_path)
+        write_record_config(control_config, config_dir / "control.yaml")
         perturbation_info.append({
             "id": "control",
             "bddl_file": str(control_bddl_path),
-            "config_file": str(control_config_path),
+            "config_file": str(config_dir / "control.yaml"),
             "prompt": base_prompt,
             "type": "control",
-            "description": "Control (no BDDL change)",
+            "description": "Control (no perturbation)",
         })
 
-    # Random design points
+    temporal_template = _temporal_spec_from_config(config, design_type)
     x_low, x_high = bounds_x
     z_low, z_high = bounds_z
 
     if design_type == "move":
-        perturbations = {"move": list(object_names)}
         centers = get_object_centers_from_bddl(base_bddl_text, object_names)
         if object_names[0] not in centers:
-            raise ValueError(f"Object {object_names[0]} not found in base BDDL region map; cannot compute absolute positions.")
+            raise ValueError(f"Object {object_names[0]} not found in base BDDL.")
         cx, cz = centers[object_names[0]]
+        perturbations = {"move": list(object_names)}
     else:
-        # distract: perturbations and spec_dict built per design point
         perturbations = {"distractor": [None] * distractor_count}
 
-    if (uniform):
-        xz_ratio = (x_high - x_low) / (z_high - z_low)
-        num_points_z_axis = int(np.floor(np.sqrt(n_design / xz_ratio)))
-        num_points_x_axis = int(np.floor(xz_ratio * num_points_z_axis))
-
-        # num_points_per_axis = int(np.floor(np.sqrt(n_design)))
-        uniform_x_values = np.linspace(x_low, x_high, num_points_x_axis)
-        uniform_z_values = np.linspace(z_low, z_high, num_points_z_axis)
-        uniform_xz_pairs = [(x, z) for x in uniform_x_values for z in uniform_z_values]
-        for _ in range(len(uniform_xz_pairs), n_design):
-            uniform_xz_pairs.append((np.random.uniform(x_low, x_high), np.random.uniform(z_low, z_high)))
+    if uniform:
+        xz_ratio = (x_high - x_low) / (z_high - z_low) if (z_high - z_low) != 0 else 1.0
+        num_z = max(1, int(np.floor(np.sqrt(n_design / xz_ratio))))
+        num_x = max(1, int(np.floor(xz_ratio * num_z)))
+        uniform_x = np.linspace(x_low, x_high, num_x)
+        uniform_z = np.linspace(z_low, z_high, num_z)
+        uniform_xz_pairs = [(float(x), float(z)) for x in uniform_x for z in uniform_z]
+        while len(uniform_xz_pairs) < n_design:
+            uniform_xz_pairs.append((float(np.random.uniform(x_low, x_high)), float(np.random.uniform(z_low, z_high))))
+        uniform_xz_pairs = uniform_xz_pairs[:n_design]
+    else:
+        uniform_xz_pairs = None
 
     for i in range(n_design):
-        if (uniform):
+        if uniform and uniform_xz_pairs is not None:
             x, z = uniform_xz_pairs[i]
         else:
             x = float(np.random.uniform(x_low, x_high))
@@ -161,20 +174,16 @@ def generate_random_design_perturbations(
         pert_id = f"rd_{i}"
 
         if design_type == "move":
-            # Place object at absolute position (original + delta)
             x_abs, z_abs = cx + x, cz + z
             spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "z": z_abs})
-            design_x, design_z = x, z  # store deltas for heatmap origin
-            desc_extra = f" [delta=({x:.4f}, {z:.4f})]"
+            design_x, design_z = x, z
         else:
-            # Distractor at absolute (x, z); one position repeated for each of distractor_count
             spec_dict = {"distractor": [[float(x), float(z)]] * distractor_count}
             if distractor_object_type is not None:
                 spec_dict["distractor_object_type"] = distractor_object_type
             elif distractor_object_types:
                 spec_dict["distractor_object_type"] = np.random.choice(distractor_object_types).item()
-            design_x, design_z = x, z  # store absolute position (no origin in heatmap)
-            desc_extra = ""
+            design_x, design_z = x, z
 
         try:
             perturbed_bddl = apply_single_perturbation(
@@ -188,27 +197,34 @@ def generate_random_design_perturbations(
         except Exception as e:
             print(f"[WARN] Random design point {pert_id} (x={x:.4f}, z={z:.4f}) failed: {e}")
             continue
+
         pert_bddl_path = bddl_dir / f"{pert_id}.bddl"
         with open(pert_bddl_path, "w") as f:
             f.write(perturbed_bddl)
+
+        spec = copy.deepcopy(temporal_template)
+        spec["start_step"] = int(spec.get("start_step", 0))
+        spec["end_step"] = int(spec.get("end_step", 99999))
+        if design_type == "move":
+            spec["delta_xy"] = [round(x, 4), round(z, 4)]
+        else:
+            spec["distractor_xy"] = [round(x, 4), round(z, 4)]
+
         record_config = create_record_config_fn(
             perturbation_id=pert_id,
             bddl_file=str(pert_bddl_path),
             prompt=base_prompt,
+            temporal_perturbations_override=[spec],
         )
         config_path = config_dir / f"{pert_id}.yaml"
         write_record_config(record_config, config_path)
-        if design_type == "move":
-            description = f"Move {object_names[0]} to (x={x_abs:.4f}, z={z_abs:.4f}){desc_extra}"
-        else:
-            description = f"Distractor at (x={x:.4f}, z={z:.4f})"
         perturbation_info.append({
             "id": pert_id,
             "bddl_file": str(pert_bddl_path),
             "config_file": str(config_path),
             "prompt": base_prompt,
             "type": "random_design_move" if design_type == "move" else "random_design_distract",
-            "description": description,
+            "description": f"rd_{i} (x={design_x:.4f}, z={design_z:.4f})",
             "x": design_x,
             "z": design_z,
         })
