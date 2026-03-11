@@ -85,6 +85,7 @@ slurm:
   
   # Environment setup
   conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
+  conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
   module_load: ["anaconda3/2023.03", "cuda/12.6.1"]  # List of modules to load (e.g., ["cuda/11.8"])
   
   # Job script template variables

@@ -1,0 +1,151 @@
+# inference_config.yaml
+# Configuration for record.py with temporal (mid-rollout) perturbation support
+
+# =============================================================================
+# Base Task Configuration
+# =============================================================================
+model: openvla
+task_suite_name: libero_10
+device: cuda:0
+cache_dir: /home/hice1/apalasamudram6/scratch/huggingface  # Replace with your cache directory
+
+base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
+bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
+base_prompt: put the black bowl in the bottom drawer of the cabinet and close it
+prompt: put the black bowl in the bottom drawer of the cabinet and close it
+out_file: /home/hice1/apalasamudram6/scratch/demos/temporal_demo.hdf5
+record_path: /home/hice1/apalasamudram6/scratch/demos/
+# Recording parameters
+action_scale: 1.0
+num_demos: 1
+noise_std: 0.001
+
+# =============================================================================
+# Hidden Objects (pre-loaded into sim off-screen for distractor/replace)
+# =============================================================================
+# These objects are injected into the BDDL and spawned off-screen at episode
+# start. TemporalPerturbationManager teleports them in/out during the rollout.
+# Only needed if you use "distractor" or "replace" temporal perturbation types.
+# hidden_objects:
+#   - name: moka_pot_999        # instance name (must be unique in the scene)
+#     type: moka_pot             # object type from LIBERO object registry
+#   - name: milk_777
+#     type: milk
+
+# =============================================================================
+# Temporal Perturbations (mid-rollout, with revert on window close)
+# =============================================================================
+# Each entry defines ONE perturbation window: [start_step, end_step].
+# At start_step  → perturbation is applied to the live sim.
+# At end_step+1  → sim state is fully reverted to pre-perturbation.
+# Windows may overlap freely.
+#
+# Supported types:
+#   move       : Shift object XY position in the table plane.
+#   color      : Change object geom RGBA color.
+#   distractor : Teleport a hidden object into the scene.
+#   replace    : Swap one object for another (both pre-loaded in sim).
+
+temporal_perturbations:
+
+  # ---- MOVE ----
+  # Shift akita_black_bowl_1 by (6 cm, 0) at step 50, revert at step 151.
+  - type: move
+    obj_name: akita_black_bowl_1
+    start_step: 50
+    end_step: 150
+    delta_xy: [0.06, 0.0]     # explicit (dx, dy) in meters; omit for random
+    # delta_xy: [0.0, 0.10]   # [+ and - is front and back, + and - is left and right]
+    max_move_m: 0.05           # used only when delta_xy is omitted
+
+  # Random move with no explicit delta: sampled from ±max_move_m
+  # - type: move
+  #   obj_name: akita_black_bowl_1
+  #   start_step: 200
+  #   end_step: 280
+  #   max_move_m: 0.08
+
+  # ---- COLOR ----
+  # Change akita_black_bowl_1 to red between steps 100–200.
+  # - type: color
+  #   obj_name: akita_black_bowl_1
+  #   start_step: 100
+  #   end_step: 200
+  #   color: red                 # valid: red, blue, green, yellow, purple,
+  #                              #        orange, cyan, magenta, white, black
+  #                              # omit for random color
+
+  # ---- DISTRACTOR ----
+  # Teleport moka_pot_999 into the scene from steps 120–300.
+  # moka_pot_999 must be listed in hidden_objects above.
+  # - type: distractor
+  #   distractor_obj_name: moka_pot_999
+  #   start_step: 120
+  #   end_step: 300
+  #   distractor_xy: [0.10, -0.10]  # (x, y) table-plane coords; omit for random
+
+  # ---- REPLACE ----
+  # Hide wine_bottle_1 and show milk_777 in its place from steps 180–350.
+  # milk_777 must be listed in hidden_objects above.
+  # - type: replace
+  #   obj_name: wine_bottle_1
+  #   replacement_obj_name: milk_777
+  #   start_step: 180
+  #   end_step: 350
+
+# =============================================================================
+# Spatial (pre-episode) Perturbation Configuration (unchanged from original)
+# =============================================================================
+perturbations:
+  num_perturbations: 6
+  types:
+    - bddl_spatial
+  bddl_spatial:
+    max_init_range_m: 0.001
+    perturbation_specs:
+      - type: move
+        objects: ["akita_black_bowl_1"]
+        max_move_m: 0.05
+      - type: control
+        objects: []
+
+# =============================================================================
+# SLURM Job Configuration
+# =============================================================================
+slurm:
+  max_concurrent_jobs: 4
+  job_params:
+    partition: "coc-gpu"
+    account: "coc"
+    time: "02:00:00"
+    nodes: 1
+    ntasks_per_node: 1
+    cpus_per_task: 4
+    mem: 16G
+    gpus: 1
+    gpu_type: "V100"
+    constraint: null
+    blacklisted_nodes: ["atl1-1-01-002-8-0"]
+  conda_env: /home/hice1/apalasamudram6/scratch/.conda/envs/vla-e
+  module_load: ["anaconda3/2023.03", "cuda/12.6.1"]
+  job_name_prefix: "vla_record"
+  poll_interval: 30
+
+# =============================================================================
+# Directory Structure
+# =============================================================================
+run_base_dir: null
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  enabled: true
+  metric_weights:
+    w_result: 1.0
+    w_time: 1.0
+    w_trajectory: 1.0
+  trajectory_weights: [1.0, 1.0, 1.0, 0, 0, 0, 0, 0]
+  output_formats:
+    - json
+    - hdf5
