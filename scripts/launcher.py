@@ -212,6 +212,8 @@ class Launcher:
         self.dispatch_jobs()
         if self.config.get("render_videos", True):
             self.render_videos()
+        else:
+            print("[INFO] Video rendering is disabled in config; skipping.")
         self.run_evaluation()
         print("\n" + "=" * 80)
         print("Pipeline complete!")

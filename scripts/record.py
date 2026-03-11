@@ -528,11 +528,13 @@ def record_demo(config: Dict[str, Any]):
     for demo_idx in range(num_demos):
         print(f"\n{'=' * 60}")
         print(f"Recording demo {demo_idx + 1}/{num_demos}")
+        # Use different seed for each demo - ensure control and unperturbed have different seeds
+        seed = demo_idx + (1000 if "unperturbed" in config["bddl_file"] else 0)
         print(f"{'=' * 60}")
         demo_data = record_single_demo(
             env, processor, vla, config,
             demo_index=demo_idx,
-            seed=demo_idx,
+            seed=seed,
             temporal_manager=temporal_manager,
         )
         all_demos.append(demo_data)

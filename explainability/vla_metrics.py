@@ -41,13 +41,15 @@ def calculate_vla_metric(
         W (np.array): A diagonal matrix or 1d array that represents the weights of the different trajectory dimensions (8D)
     
     Returns:
-        list[float]: the VLA metric (-inf, inf) between the unperturbed and perturbed episodes along with the other component metrics [success_metric, time_metric, trajectory_metric].
+        list[float]: the VLA metric (-inf, inf) between the unperturbed and perturbed episodes along with the other component metrics [metric, success_rate, success_metric, time_metric, trajectory_metric].
     """
     assert min(w_result, w_time, w_trajectory) >= 0, "Each metric weight must be non-negative."
     assert sum([w_result, w_time, w_trajectory]) != 0, "Metric weights must not sum to 0."
 
     metric_weights = np.array([w_result, w_time, w_trajectory])
     metric_weights = metric_weights / np.linalg.norm(metric_weights)
+
+    success_rate = calculate_success_rate(perturbed_episode_results)
     success_metric = calculate_success_metric(unperturbed_episode_results, perturbed_episode_results)
     time_metric = calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths)
     trajectory_metric = normalize_trajectory_difference(unperturbed_trajectories, perturbed_trajectories, controlled_trajectories, W)
@@ -57,8 +59,19 @@ def calculate_vla_metric(
 
     vla_metric = metric_weights[0] * success_metric + metric_weights[1] * time_metric + metric_weights[2] * trajectory_metric
 
-    return [vla_metric, success_metric, time_metric, trajectory_metric]
+    return [vla_metric, success_rate, success_metric, time_metric, trajectory_metric]
 
+def calculate_success_rate(episode_results):
+    """
+    Computes the success rate for a set of episode results.
+
+    Args:
+        episode_results (torch.Tensor): A binary tensor of shape (n, 1) for the results (1 - success, 0 - fail) of each trial of the episode.
+    
+    Returns:
+        float: the success rate of the episode.
+    """
+    return torch.mean(episode_results.float())
 
 def calculate_success_metric(unperturbed_episode_results, perturbed_episode_results):
     """
@@ -75,7 +88,7 @@ def calculate_success_metric(unperturbed_episode_results, perturbed_episode_resu
     assert torch.all((perturbed_episode_results == 0) | (perturbed_episode_results == 1)), "The results of the perturbed episode trials must be either 0 (unsuccessful) or 1 (successful)."
     average_unperturbed_success_rate = torch.mean(unperturbed_episode_results.float())
     average_perturbed_success_rate = torch.mean(perturbed_episode_results.float())
-    success_rate_difference = torch.abs(average_unperturbed_success_rate - average_perturbed_success_rate)
+    success_rate_difference = torch.abs(average_unperturbed_success_rate - average_perturbed_success_rate)  # TODO: remove absolute??
     return success_rate_difference
 
 def calculate_time_metric(unperturbed_episode_lengths, perturbed_episode_lengths):
