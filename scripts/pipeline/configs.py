@@ -53,6 +53,12 @@ def create_record_config(
         "num_demos": config.get("num_demos", 1),
         "noise_std": config.get("noise_std", 0.0),
     }
+    # Always forward temporal (mid-rollout) perturbation config so all launcher paths use it.
+    # Use first frame (start_step: 0) for full-rollout; use large end_step (e.g. 99999) for "until episode end".
+    record_config["temporal_perturbations"] = config.get("temporal_perturbations", [])
+    record_config["hidden_objects"] = config.get("hidden_objects", [])
+    if config.get("target_workspace") is not None:
+        record_config["target_workspace"] = config["target_workspace"]
     return record_config
 
 

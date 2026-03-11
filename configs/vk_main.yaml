@@ -61,6 +61,48 @@ perturbations:
     # All standard perturbations will be generated
 
 # =============================================================================
+# Temporal (mid-rollout) perturbations — used by all launcher flows
+# =============================================================================
+# Applied during recording by record.py. Collisions are resolved automatically
+# (stacking or placement inside open drawers/cabinets). Move and distract supported
+# at any timestep.
+#
+# Timing:
+#   - Full duration of rollout: set start_step to 0 (first frame) and end_step to
+#     a value >= episode length (e.g. 99999) so the perturbation is never reverted.
+#   - Exact timestep window: set start_step and end_step to the desired frame range.
+#     At start_step the perturbation is applied; at end_step+1 it is reverted.
+#
+# hidden_objects: required for distractor/replace types (pre-loaded off-screen).
+# hidden_objects:
+#   - name: moka_pot_999
+#     type: moka_pot
+#   - name: milk_777
+#     type: milk
+
+temporal_perturbations:
+  # Full-rollout move (first frame to end of episode).
+  - type: move
+    obj_name: akita_black_bowl_1
+    start_step: 0
+    end_step: 99999
+    delta_xy: [0.06, 0.0]
+    max_move_m: 0.05
+
+  # Specific timestep examples (uncomment to use):
+  # - type: move
+  #   obj_name: akita_black_bowl_1
+  #   start_step: 50
+  #   end_step: 150
+  #   delta_xy: [0.04, 0.02]
+  #   max_move_m: 0.05
+  # - type: distractor
+  #   distractor_obj_name: moka_pot_999
+  #   start_step: 80
+  #   end_step: 200
+  #   distractor_xy: [0.10, -0.10]
+
+# =============================================================================
 # SLURM Job Configuration
 # =============================================================================
 slurm:

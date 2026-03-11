@@ -8,6 +8,11 @@ This script:
 3. Dispatches SLURM jobs in a queue-like fashion
 4. Runs evaluation scripts after all jobs complete
 
+Temporal (mid-rollout) perturbations from the main config (temporal_perturbations and
+hidden_objects) are forwarded to every generated record config, so all launcher flows
+(full pipeline, random-design, generate-only) use them when recording. Use start_step: 0
+and end_step: 99999 for a perturbation that lasts the full rollout.
+
 Usage:
     # Full pipeline (generate + SLURM jobs + videos + evaluation):
     python scripts/launcher.py --config configs/main.yaml

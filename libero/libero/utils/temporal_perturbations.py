@@ -5,6 +5,13 @@ Perturbations are defined as time-windowed specs with [start_step, end_step].
 At start_step, the perturbation is applied directly to the live MuJoCo sim.
 At end_step, the original state is restored (revert=True by default).
 
+Timing conventions (for config/main.yaml):
+  - Full duration of rollout: set start_step to 0 (first frame) and end_step to
+    FULL_ROLLOUT_END_STEP (or any value >= episode length) so the perturbation
+    is never reverted during the episode.
+  - Exact timestep window: set start_step and end_step to the desired frame
+    range; at end_step+1 the state is reverted.
+
 Supported perturbation types (all applied via sim state manipulation):
   - move      : Teleport object to a new XY position in the table plane
   - color     : Change object geom RGBA color(s)
@@ -64,6 +71,10 @@ import numpy as np
 # ---------------------------------------------------------------------------
 _OFFSCREEN_XYZ = np.array([100.0, 100.0, 100.0], dtype=np.float64)
 _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+# Sentinel end_step for "full rollout": perturbation from first frame until episode end.
+# Use in config: end_step: 99999 (or this constant's value) with start_step: 0.
+FULL_ROLLOUT_END_STEP: int = 99999
 
 # ---------------------------------------------------------------------------
 # Robot-movement detection threshold (metres, full 3-D XYZ distance).
