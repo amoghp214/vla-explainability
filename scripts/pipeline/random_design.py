@@ -32,7 +32,7 @@ from .configs import write_record_config
 
 
 def _temporal_spec_from_config(config: Dict[str, Any], design_type: str) -> Dict[str, Any]:
-    """Build temporal spec template: start_step, end_step from config; type, obj_name/distractor_obj_name, max_move_m."""
+    """Build temporal spec template: start_step, end_step from config; type, obj_name/distractor_obj_name. No max_move_m — perturbation comes from bounds (delta_xy/distractor_xy set per design point)."""
     temporal = config.get("temporal_perturbations") or []
     for spec in temporal:
         if spec.get("type") == design_type:
@@ -45,10 +45,9 @@ def _temporal_spec_from_config(config: Dict[str, Any], design_type: str) -> Dict
     start = int(config.get("perturbation_start_step", config.get("start_step", 0)))
     end = int(config.get("perturbation_stop_step", config.get("end_step", 99999)))
     rd = config.get("random_design", {})
-    max_move_m = float(config.get("max_move_m", rd.get("max_move_m", 0.05)))
     if design_type == "move":
         obj = (rd.get("object_names") or config.get("object_names") or ["akita_black_bowl_1"])[0]
-        return {"type": "move", "obj_name": obj, "start_step": start, "end_step": end, "max_move_m": max_move_m}
+        return {"type": "move", "obj_name": obj, "start_step": start, "end_step": end}
     hidden = config.get("hidden_objects") or []
     if not hidden:
         raise ValueError("Random design type 'distract' requires hidden_objects in config.")
@@ -97,7 +96,10 @@ def generate_random_design_perturbations(
     base_bddl_text = read_bddl(str(base_bddl))
     pert_config = config.get("perturbations", {}).get("bddl_spatial", {})
     init_range_m = config.get("init_range_m", pert_config.get("init_range_m", 0.001))
-    max_move_m = config.get("max_move_m", pert_config.get("max_move_m", 0.05))
+    # Perturbation magnitude/coordinates come from bounds only; derive fallback for apply_single_perturbation (only used when spec is incomplete).
+    x_low, x_high = bounds_x
+    z_low, z_high = bounds_z
+    fallback_max_move = max(abs(x_high - x_low), abs(z_high - z_low)) * 0.5 if (bounds_x and bounds_z) else 0.05
     base_bddl_text = fix_init_ranges(
         base_bddl_text,
         init_range_m=init_range_m,
@@ -196,7 +198,7 @@ def generate_random_design_perturbations(
                 spec_dict,
                 perturbations,
                 init_range_m=init_range_m,
-                max_move_m=max_move_m,
+                max_move_m=fallback_max_move,
             )
         except Exception as e:
             print(f"[WARN] Random design point {pert_id} (x={x:.4f}, z={z:.4f}) failed: {e}")

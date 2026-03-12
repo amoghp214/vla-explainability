@@ -21,13 +21,14 @@ Pipeline for generating perturbed LIBERO datasets and recording OpenVLA demonstr
 
 ## Overview
 
-The system:
+The pipeline has a single workflow: **random-design + temporal**.
 
-1. **Generates perturbations** — Reads a base BDDL task, applies spatial and/or language perturbations, writes BDDL files and record configs. Init regions use a small fixed box (`init_range_m`, side length in m) so the env barely changes across runs and MuJoCo gets valid geom sizes.
-2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
-3. **Post-processes** — Optionally renders videos from HDF5 recordings (controlled by `render_videos` in config) and runs evaluation (trajectory comparison, metrics).
+1. **Generate** — Samples (x, z) from bounds, writes unperturbed + control + rd_0..rd_{n-1} BDDL and record YAMLs. Init regions use a small box (`init_range_m`). Each rd_i.yaml includes temporal_perturbations so the perturbation is applied at configurable steps during recording.
+2. **Dispatch** — Submits SLURM jobs to record each config with OpenVLA.
+3. **Post-process** — Optionally renders videos (`render_videos` in config) and runs evaluation (trajectory comparison, VLA metric).
+4. **Heatmap** — Fits a BoTorch GP and saves a heatmap of metric vs (x, z).
 
-You can run the full pipeline (generate → SLURM → videos → evaluation) or only generate files and run/playback one perturbation locally. **Random-design** mode can run in two ways: **move** (random (x, z) translation of one object → heatmap of metric vs absolute position) or **distract** (random (x, z) position to add a distractor → heatmap of metric vs distractor position). See [Random-design mode](#random-design-mode-metric-vs-translation-heatmap).
+Perturbation type: **move** (translate one object by delta; heatmap vs absolute position) or **distract** (add distractor at (x, z); heatmap vs distractor position). Config must include a `random_design` section (see `configs/vk_main.yaml`).
 
 ---
 
@@ -35,74 +36,71 @@ You can run the full pipeline (generate → SLURM → videos → evaluation) or 
 
 ### 1. Configure
 
-Edit `configs/main.yaml`:
+Edit `configs/vk_main.yaml` (or `configs/main.yaml`):
 
 - **Base task:** `base_bddl_file`, `base_prompt`, `task_suite_name`
-- **Paths:** `cache_dir` (HuggingFace), `run_base_dir` (optional; default `$SCRATCH/vla-explainability-runs`)
-- **SLURM:** `slurm.job_params` (account, partition, time, gpus), `slurm.conda_env`, `slurm.module_load`
-- **Perturbations:** `perturbations.types`, `perturbations.bddl_spatial.perturbation_specs` (see below)
+- **random_design:** `type` (move | distract), `n_design`, `bounds_x`, `bounds_z`, `object_names` (for move), `seed`, `uniform`
+- **Temporal:** `perturbation_start_step`, `perturbation_stop_step`
+- **SLURM:** `slurm.job_params`, `slurm.conda_env`, `slurm.module_load`
 
-### 2. Run full pipeline
+### 2. Run pipeline
 
 ```bash
-python scripts/launcher.py --config configs/main.yaml
+python scripts/launcher.py --config configs/vk_main.yaml
 ```
 
-This creates a timestamped run directory, generates all BDDL/configs, submits SLURM jobs, then runs optional video rendering and evaluation when jobs finish. Set `render_videos: false` in the config to skip rendering videos from HDF5s.
+This creates a run directory, generates BDDL and record YAMLs (unperturbed, control, rd_0..rd_{n-1}), submits SLURM jobs, then runs evaluation and heatmap when jobs finish. Set `render_videos: false` to skip video rendering.
 
 ### 3. Generate only (no jobs)
 
-To only write BDDL and configs to a local folder:
-
 ```bash
-python scripts/launcher.py --config configs/main.yaml --generate-only --run-dir ./local_run
+python scripts/launcher.py --config configs/vk_main.yaml --generate-only --run-dir ./local_run
 ```
 
-Then record and playback manually (see [Local runs](#local-runs-no-slurm)).
+Then record configs manually (see [Local runs](#local-runs-no-slurm)).
 
 ---
 
 ## Random-design mode (metric vs translation heatmap)
 
-Random-design treats **one perturbation run as one black-box evaluation**. Two modes are supported:
+The pipeline supports two perturbation types (`random_design.type` or `--type`):
 
-- **move** — Input is (x, z) **delta** translation for a single object from its original BDDL position. The launcher generates `n_design` random deltas in the given bounds, places the object at **(original_center + dx, original_center + dz)**, and produces a **heatmap of metric vs absolute (x, z) position**.
-- **distract** — Input is (x, z) **position** where a new distractor object is added. The launcher generates `n_design` random positions in the given bounds, adds a distractor at each (x, z), and produces a **heatmap of metric vs distractor position**. You can specify the distractor object type in config.
+- **move** — (x, z) are **deltas** from the object's original BDDL position. Samples in bounds, heatmap of metric vs absolute (x, z).
+- **distract** — (x, z) are the **position** where a distractor is added. Heatmap of metric vs distractor position.
 
-In both modes the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed); a BoTorch GP is fitted and a heatmap is saved.
+Config must include a `random_design` section (see `configs/vk_main.yaml`).
 
 **Generator vs temporal:** A single component (`scripts/pipeline/random_design.py`) generates all BDDL and record YAML files from random sampling. The temporal engine (`libero.utils.temporal_perturbations`, used by `record.py`) does not generate perturbations—it only reads the generated config and applies/reverts each perturbation at the configured `perturbation_start_step` and `perturbation_stop_step` during the rollout.
 
 ### Usage
 
 ```bash
-# Move mode (default): translate one object, heatmap vs absolute position
-python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20
+# Default: move mode, n_design and bounds from config
+python scripts/launcher.py --config configs/vk_main.yaml
 
-# Override bounds (comma-separated low,high for both x and z, in meters)
-python scripts/launcher.py --config configs/main.yaml --random-design --n-design 20 --bounds -0.05,0.05
+# Override design count and bounds
+python scripts/launcher.py --config configs/vk_main.yaml --n-design 20 --bounds -0.05,0.05
 
-# Distract mode: add distractor at random (x,z), heatmap vs distractor position
-python scripts/launcher.py --config configs/main.yaml --random-design --random-design-type distract --n-design 20 --bounds -0.2,0.2
+# Distract mode
+python scripts/launcher.py --config configs/vk_main.yaml --type distract --n-design 20 --bounds -0.2,0.2
 
-# Generate only (then record and re-run without --generate-only to get heatmap)
-python scripts/launcher.py --config configs/main.yaml --random-design --generate-only --run-dir ./rd_run
+# Generate only
+python scripts/launcher.py --config configs/vk_main.yaml --generate-only --run-dir ./rd_run
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--random-design` | Enable random-design pipeline (move or distract → metric → heatmap). |
-| `--random-design-type` | `move` (default) or `distract`. Move = translate one object by delta; distract = add distractor at (x,z) position. |
-| `--n-design` | Number of random design points (default from config or 20). |
-| `--seed` | Random seed for sampling (default from config or 1). |
-| `--bounds` | Optional. Comma-separated `low,high` in meters for both x and z. For move: delta range; for distract: position range. If omitted, uses **`(-max_move_m, max_move_m)`** from config. |
-| `--objects` | Object name for **move** mode only (exactly one). If omitted, uses first move object from `perturbation_specs` in config. Ignored in distract mode. |
+| `--type` | `move` (default) or `distract`. Overrides config `random_design.type`. |
+| `--n-design` | Number of random design points. Overrides config. |
+| `--seed` | Random seed. Overrides config. |
+| `--bounds` | Comma-separated `low,high` in meters for both x and z. Overrides config `random_design.bounds_x/z`. |
+| `--objects` | Object name(s) for type=move only (exactly one). Overrides config. |
 
-### Config (optional)
+### Config
 
-You can set defaults in `configs/main.yaml` under `random_design`:
+Set `random_design` in your config (e.g. `configs/vk_main.yaml` or `configs/main.yaml`):
 
 ```yaml
 random_design:
@@ -125,7 +123,7 @@ random_design:
 - **distractor_object_type** — For `type: distract`: single LIBERO object type for all distractors (e.g. `akita_black_bowl`, `plate`, `wine_bottle`). Omit to use random type.
 - **distractor_object_types** — For `type: distract`: list of types; one is chosen at random per design point. Ignored if `distractor_object_type` is set.
 
-If `bounds_x` / `bounds_z` are omitted, they default to `(-max_move_m, max_move_m)` from `perturbations.bddl_spatial.max_move_m`.
+If `bounds_x` / `bounds_z` are omitted in config and `--bounds` is not passed, they default to `(-0.05, 0.05)`. Perturbation amount (move) or coordinates (distractor) come only from these bounds.
 
 ### Outputs
 
@@ -161,7 +159,7 @@ Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, e
 - **`perturbations.types`** — List: `bddl_spatial`, `language` (or both).
 - **`perturbations.bddl_spatial`**:
   - **`init_range_m`** — Side length (m) of the init placement box for each object region; small value (e.g. 0.001) keeps the env nearly deterministic and gives MuJoCo a positive geom size. Default `0.001` (1 mm).
-- **`max_move_m`** — Default max distance (m) for “move” perturbations (can be overridden per spec). Also used as the **default translation bounds** for [random-design mode](#random-design-mode-metric-vs-translation-heatmap): if bounds are not set, x and z are sampled in `(-max_move_m, max_move_m)`.
+- **`max_move_m`** — Used only for non-random-design perturbation_specs. For random-design, bounds come from random_design.bounds_x and bounds_z (or --bounds); default (-0.05, 0.05).
 - **`perturbation_specs`** — List of entries; each entry produces one run (one BDDL + one record config).
 
 ### Perturbation spec entries (YAML)
@@ -339,7 +337,7 @@ Check SLURM `account`, `partition`, and `conda_env` in `configs/main.yaml`. Insp
 
 ### Perturbation generation fails
 
-Confirm `base_bddl_file` exists and object names in `perturbation_specs` match the BDDL (e.g. `akita_black_bowl_1`). Check console for validation errors.
+Confirm `base_bddl_file` exists and `random_design.object_names` (for type=move) or `hidden_objects` (for type=distract) match the BDDL. Check console for validation errors.
 
 ---
 
@@ -349,7 +347,7 @@ Confirm `base_bddl_file` exists and object names in `perturbation_specs` match t
 
 - **Spatial:** `libero/libero/utils/generate_perturbation_bddl.py` — `apply_perturbations`, `move_object`, `reorient_object`, `change_color`, `replace_object`, `add_distractor`, and `generate_move_spec_dict`.
 - **Language:** `explainability/perturbations/language/generate_perturbations.py`.
-- **Launcher:** `scripts/launcher.py` — config-driven generation; random-design in `run_random_design()` and `scripts/pipeline/random_design.py` (`generate_random_design_perturbations`, `run_heatmap`).
+- **Launcher:** `scripts/launcher.py` — single workflow: random-design + temporal (`run_random_design()`, `scripts/pipeline/random_design.py`).
 
 ### Custom move positions
 

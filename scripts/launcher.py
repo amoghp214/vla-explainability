@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Launcher for random-design pipeline: n+2 BDDL files, SLURM record jobs, evaluation, BO heatmap.
+Launcher for the VLA explainability pipeline: random-design + temporal (only workflow).
 
-Workflow (--random-design):
+Workflow:
   1. Generate unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl (n+2 BDDL files).
-     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, z_i).
+     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, z_i) from bounds.
   2. Generate one YAML per run; each rd_i.yaml points to rd_i.bddl and sets temporal_perturbations
      at perturbation_start_step/perturbation_stop_step so the move is applied during recording.
   3. Dispatch SLURM jobs (record.py). Videos are rendered inside record.py.
-  4. After jobs complete, run evaluation (no separate playback/render step).
+  4. After jobs complete, run evaluation.
   5. Fit BO and save heatmap: axes = absolute perturbation position (m), color = VLA metric.
 
 Usage:
-    python scripts/launcher.py --config configs/vk_main.yaml --random-design
+    python scripts/launcher.py --config configs/vk_main.yaml
 """
 
 import json
@@ -28,7 +28,7 @@ sys.path.insert(0, str(project_root))
 from scripts.pipeline.run_dir import create_run_dir, PROJECT_ROOT
 from scripts.pipeline.configs import create_record_config as pipeline_create_record_config
 from scripts.pipeline.slurm import dispatch_batch
-from scripts.pipeline.generate_perturbations import generate_perturbations_from_config, save_perturbation_manifest
+from scripts.pipeline.generate_perturbations import save_perturbation_manifest
 from scripts.pipeline.render import render_videos
 from scripts.pipeline.evaluation import run_evaluation
 from scripts.pipeline.perturbation import read_bddl, get_object_centers_from_bddl
@@ -39,7 +39,7 @@ from scripts.pipeline.random_design import (
 
 
 class Launcher:
-    """Thin orchestrator for the pipeline: run_dir, generate, dispatch, render, evaluate."""
+    """Orchestrator for the random-design + temporal pipeline: run_dir, generate BDDL+YAML, dispatch, render, evaluate, heatmap."""
 
     def __init__(self, config_path: str, run_dir_override: Optional[str] = None):
         self.config_path = Path(config_path)
@@ -52,7 +52,7 @@ class Launcher:
         self.jobs_dir = rd.jobs_dir
         self.config = rd.config
         self.perturbation_info = []
-        self.design_points: List[dict] = []  # Used in random-design mode: [{id, x, z}, ...]
+        self.design_points: List[dict] = []  # [{id, x, z}, ...]
         self.random_design_type: str = "move"  # "move" or "distract"
 
         print(f"[INFO] Run directory: {self.run_dir}")
@@ -68,19 +68,6 @@ class Launcher:
             config_dir=self.config_dir,
             **kwargs,
         )
-
-    def generate_perturbations(self) -> None:
-        """Generate all perturbation files (BDDL and config YAMLs) via pipeline."""
-        print("\n[INFO] Generating perturbation files...")
-        self.perturbation_info = generate_perturbations_from_config(
-            config=self.config,
-            bddl_dir=self.bddl_dir,
-            config_dir=self.config_dir,
-            results_dir=self.results_dir,
-            create_record_config_fn=self._create_record_config_fn,
-        )
-        print(f"[INFO] Generated {len(self.perturbation_info)} perturbation files")
-        save_perturbation_manifest(self.perturbation_info, self.run_dir)
 
     def generate_random_design_perturbations(
         self,
@@ -195,27 +182,6 @@ class Launcher:
             design_type=self.random_design_type,
         )
 
-    def run(self, generate_only: bool = False) -> None:
-        if generate_only:
-            self.generate_perturbations()
-            self._print_local_recording_instructions()
-            return
-        print("=" * 80)
-        print("VLA Explainability Pipeline Launcher")
-        print("=" * 80)
-        print(f"Run directory: {self.run_dir}")
-        self.generate_perturbations()
-        self.dispatch_jobs()
-        if self.config.get("render_videos", True):
-            self.render_videos()
-        else:
-            print("[INFO] Video rendering is disabled in config; skipping.")
-        self.run_evaluation()
-        print("\n" + "=" * 80)
-        print("Pipeline complete!")
-        print(f"Results available in: {self.run_dir}")
-        print("=" * 80)
-
     def run_random_design(
         self,
         n_design: int,
@@ -230,11 +196,11 @@ class Launcher:
         distractor_object_type: Optional[str] = None,
         distractor_object_types: Optional[List[str]] = None,
     ) -> None:
-        """Run random-design pipeline: generate (x,z) move or distractor perturbations -> dispatch -> evaluate -> heatmap."""
+        """Run pipeline: generate (x,z) perturbations from bounds -> dispatch -> evaluate -> heatmap."""
         self.random_design_type = design_type
         title = "metric vs x, z translation" if design_type == "move" else "metric vs distractor position (x, z)"
         print("=" * 80)
-        print(f"VLA Random-Design Pipeline ({title})")
+        print("VLA Explainability Pipeline (random-design + temporal)")
         print("=" * 80)
         print(f"Run directory: {self.run_dir}")
         print(f"type={design_type}, n_design={n_design}, bounds_x={bounds_x}, bounds_z={bounds_z}, seed={seed}")
@@ -274,7 +240,7 @@ class Launcher:
 
     def _print_random_design_instructions(self) -> None:
         print("\n" + "=" * 80)
-        print("Random-design generate-only complete. Next steps:")
+        print("Generate-only complete. Next steps:")
         print("=" * 80)
         print(f"\n1. Record unperturbed, control, and rd_* configs (e.g. with SLURM or locally):")
         print(f"   python scripts/record.py --config {self.config_dir / 'unperturbed.yaml'}")
@@ -284,137 +250,110 @@ class Launcher:
         print(f"   (Re-run launcher without --generate-only, or run analysis + heatmap manually.)")
         print("=" * 80)
 
-    def _print_local_recording_instructions(self) -> None:
-        print("\n" + "=" * 80)
-        print("Generate-only complete. To record one perturbation locally:")
-        print("=" * 80)
-        print(f"\n1. Run record for a single config (e.g. unperturbed or perturbed_0):")
-        print(f"   python scripts/record.py --config {self.config_dir / 'unperturbed.yaml'}")
-        print(f"\n   Or for a specific perturbation:")
-        for info in self.perturbation_info:
-            if info["id"] != "unperturbed":
-                print(f"   python scripts/record.py --config {info['config_file']}")
-                break
-        print(f"\n2. From project root, ensure device/cache_dir in the generated config")
-        print(f"   (in {self.config_dir}) match your machine, or override in the YAML.")
-        print(f"\n3. After recording, render video (optional):")
-        print(f"   python scripts/playback.py --config <same_config.yaml>")
-        print("=" * 80)
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Launch pipelined perturbed dataset generation")
-    parser.add_argument("--config", type=str, required=True, help="Path to main.yaml configuration file")
+    parser = argparse.ArgumentParser(
+        description="Launch VLA explainability pipeline (random-design + temporal: generate BDDL/YAML, dispatch jobs, evaluate, heatmap)."
+    )
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML (must include random_design section)")
     parser.add_argument(
         "--generate-only",
         action="store_true",
-        help="Only generate perturbation files (BDDL + config YAMLs). Do not submit SLURM jobs. Use with --run-dir for local step-by-step runs.",
+        help="Only generate BDDL and record YAMLs. Do not submit SLURM jobs.",
     )
     parser.add_argument(
         "--run-dir",
         type=str,
         default=None,
-        help="Override run directory (e.g. ./local_run). Useful with --generate-only for local step-by-step runs.",
-    )
-    # Random-design mode: random (x, z) translation -> VLA metric -> heatmap
-    parser.add_argument(
-        "--random-design",
-        action="store_true",
-        help="Run random-design pipeline: generate n_design random (x,z) move perturbations, dispatch jobs, run VLA metric, produce heatmap of metric vs x, z translation.",
+        help="Override run directory (e.g. ./local_run).",
     )
     parser.add_argument(
         "--n-design",
         type=int,
         default=None,
-        help="Number of random design points (for --random-design). Overrides config random_design.n_design if set.",
+        help="Number of random design points. Overrides config random_design.n_design.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Random seed for design sampling (for --random-design).",
+        help="Random seed for design sampling. Overrides config random_design.seed.",
     )
     parser.add_argument(
         "--bounds",
         type=str,
         default=None,
-        help="Comma-separated low,high for both x and z in meters (e.g. -0.05,0.05). If omitted, uses (-max_move_m, max_move_m) from config perturbations.bddl_spatial.",
+        help="Comma-separated low,high for both x and z in meters (e.g. -0.05,0.05). Overrides config random_design.bounds_x/z.",
     )
     parser.add_argument(
         "--objects",
         type=str,
         nargs="+",
         default=None,
-        help="Object name(s) for move perturbation (for --random-design type=move). Must be exactly one object. Overrides config random_design.object_names.",
+        help="Object name(s) for type=move. Exactly one. Overrides config random_design.object_names.",
     )
     parser.add_argument(
-        "--random-design-type",
+        "--type",
+        dest="design_type",
         type=str,
         choices=["move", "distract"],
         default=None,
-        help="Random-design mode: 'move' (translate one object by delta) or 'distract' (add distractor at (x,z)). Overrides config random_design.type.",
+        help="Perturbation type: move (translate object) or distract (add distractor). Overrides config random_design.type.",
     )
     args = parser.parse_args()
 
-    if args.random_design:
-        launcher = Launcher(args.config, run_dir_override=args.run_dir)
-        config = launcher.config
-        rd_config = config.get("random_design", {})
-        design_type = args.random_design_type if args.random_design_type is not None else rd_config.get("type", "move")
-        distractor_count = rd_config.get("distractor_count", 1)
-        distractor_object_type = rd_config.get("distractor_object_type")  # single type
-        distractor_object_types = rd_config.get("distractor_object_types")  # list; random choice per point
-        n_design = args.n_design if args.n_design is not None else rd_config.get("n_design", 20)
-        seed = args.seed if args.seed is not None else rd_config.get("seed", 1)
-        uniform = rd_config.get("uniform", False)
-        if args.bounds:
-            try:
-                low, high = map(float, args.bounds.split(","))
-                bounds_x = bounds_z = (low, high)
-            except Exception:
-                max_move_m = config.get("perturbations", {}).get("bddl_spatial", {}).get("max_move_m", 0.05)
-                default_bounds = (-max_move_m, max_move_m)
-                bounds_x = bounds_z = default_bounds
-        else:
-            max_move_m = config.get("perturbations", {}).get("bddl_spatial", {}).get("max_move_m", 0.05)
-            default_bounds = (-max_move_m, max_move_m)
-            bx = rd_config.get("bounds_x")
-            bz = rd_config.get("bounds_z")
-            if bx is not None or bz is not None:
-                bounds_x = tuple(bx) if isinstance(bx, (list, tuple)) else default_bounds
-                bounds_z = tuple(bz) if isinstance(bz, (list, tuple)) else default_bounds
-            else:
-                bounds_x = bounds_z = default_bounds
-        object_names = None
-        if design_type == "move":
-            object_names = args.objects if args.objects is not None else rd_config.get("object_names")
-            if not object_names or len(object_names) != 1:
-                specs = config.get("perturbations", {}).get("bddl_spatial", {}).get("perturbation_specs", [])
-                for s in specs:
-                    if s.get("type") == "move" and s.get("objects"):
-                        object_names = s["objects"][:1]
-                        break
-                if not object_names or len(object_names) != 1:
-                    raise ValueError(
-                        "Random-design type 'move' requires exactly one object. Set --objects or config random_design.object_names (e.g. [\"akita_black_bowl_1\"])."
-                    )
-        launcher.run_random_design(
-            n_design=n_design,
-            bounds_x=bounds_x,
-            bounds_z=bounds_z,
-            object_names=object_names,
-            seed=seed,
-            generate_only=args.generate_only,
-            uniform=uniform,
-            design_type=design_type,
-            distractor_count=distractor_count,
-            distractor_object_type=distractor_object_type,
-            distractor_object_types=distractor_object_types,
-        )
-        return
-
     launcher = Launcher(args.config, run_dir_override=args.run_dir)
-    launcher.run(generate_only=args.generate_only)
+    config = launcher.config
+    rd_config = config.get("random_design", {})
+    if not rd_config:
+        raise ValueError("Config must include a 'random_design' section. See configs/vk_main.yaml.")
+    design_type = args.design_type if args.design_type is not None else rd_config.get("type", "move")
+    distractor_count = rd_config.get("distractor_count", 1)
+    distractor_object_type = rd_config.get("distractor_object_type")
+    distractor_object_types = rd_config.get("distractor_object_types")
+    n_design = args.n_design if args.n_design is not None else rd_config.get("n_design", 20)
+    seed = args.seed if args.seed is not None else rd_config.get("seed", 1)
+    uniform = rd_config.get("uniform", False)
+    if args.bounds:
+        try:
+            low, high = map(float, args.bounds.split(","))
+            bounds_x = bounds_z = (low, high)
+        except Exception:
+            bounds_x = bounds_z = (-0.05, 0.05)
+    else:
+        bx = rd_config.get("bounds_x")
+        bz = rd_config.get("bounds_z")
+        if bx is not None and bz is not None:
+            bounds_x = tuple(bx) if isinstance(bx, (list, tuple)) else (-0.05, 0.05)
+            bounds_z = tuple(bz) if isinstance(bz, (list, tuple)) else (-0.05, 0.05)
+        else:
+            bounds_x = bounds_z = (-0.05, 0.05)
+    object_names = None
+    if design_type == "move":
+        object_names = args.objects if args.objects is not None else rd_config.get("object_names")
+        if not object_names or len(object_names) != 1:
+            specs = config.get("perturbations", {}).get("bddl_spatial", {}).get("perturbation_specs", [])
+            for s in specs:
+                if s.get("type") == "move" and s.get("objects"):
+                    object_names = s["objects"][:1]
+                    break
+            if not object_names or len(object_names) != 1:
+                raise ValueError(
+                    "type=move requires exactly one object. Set --objects or config random_design.object_names (e.g. [\"akita_black_bowl_1\"])."
+                )
+    launcher.run_random_design(
+        n_design=n_design,
+        bounds_x=bounds_x,
+        bounds_z=bounds_z,
+        object_names=object_names,
+        seed=seed,
+        generate_only=args.generate_only,
+        uniform=uniform,
+        design_type=design_type,
+        distractor_count=distractor_count,
+        distractor_object_type=distractor_object_type,
+        distractor_object_types=distractor_object_types,
+    )
 
 
 if __name__ == "__main__":

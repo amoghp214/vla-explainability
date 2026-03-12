@@ -1,5 +1,5 @@
-# Minimal config for random-design pipeline (n+2 BDDL files, temporal at start/stop, BO heatmap).
-# Run: python scripts/launcher.py --config configs/vk_main.yaml --random-design
+# Minimal config for the pipeline (random-design + temporal, single workflow).
+# Run: python scripts/launcher.py --config configs/vk_main.yaml
 
 # --- Base task ---
 base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
@@ -28,13 +28,11 @@ random_design:
 # --- Temporal window (when perturbation is applied during recording) ---
 perturbation_start_step: 0
 perturbation_stop_step: 99999
-max_move_m: 0.05
 
 # --- BDDL init box width (m) per object ---
 perturbations:
   bddl_spatial:
     init_range_m: 0.001
-    max_move_m: 0.05
 
 # For type: distract only
 # hidden_objects:

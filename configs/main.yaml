@@ -1,5 +1,6 @@
-# Main configuration file for pipelined perturbed dataset generation
-# This file contains all parameters needed for record.py, playback.py, and perturbation generation
+# Main configuration file for the pipeline (random-design + temporal).
+# The launcher (scripts/launcher.py) uses only the random_design section and temporal settings below.
+# Run: python scripts/launcher.py --config configs/main.yaml
 
 # =============================================================================
 # Base Task Configuration
@@ -170,10 +171,9 @@ random_design:
   object_names: ["akita_black_bowl_1"]
   uniform: true
 
-# When using --random-design: temporal window and max move (m)
+# When using --random-design: temporal window; perturbation range comes from random_design.bounds_x / bounds_z
 perturbation_start_step: 0
 perturbation_stop_step: 99999
-max_move_m: 0.05
 
 # =============================================================================
 # Evaluation Configuration
