@@ -1,8 +1,15 @@
 """
-Random-design pipeline: n_design perturbation BDDL files (rd_0.bddl .. rd_{n-1}.bddl) plus
-unperturbed and control (n+2 BDDL files). During recording, temporal perturbation is applied
-at start_step/end_step from config. After jobs complete, evaluation runs and BO heatmap is
-produced with absolute perturbation positions on axes and VLA metric as heat color.
+Random-design pipeline: single generator for BDDL + YAML from random sampling.
+
+This module is the single place that generates all perturbation BDDL and record YAML
+files from random (or uniform) sampling of perturbation coordinates. It produces
+unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl and corresponding YAMLs;
+each rd_i.yaml includes temporal_perturbations with the sampled (x_i, z_i) and
+start_step/end_step from config.
+
+The temporal engine (libero.utils.temporal_perturbations / record.py) does not generate
+perturbations: it only reads the generated YAMLs and applies/reverts the perturbation
+at the configured start_step and end_step during the rollout.
 """
 
 import json
@@ -89,13 +96,11 @@ def generate_random_design_perturbations(
 
     base_bddl_text = read_bddl(str(base_bddl))
     pert_config = config.get("perturbations", {}).get("bddl_spatial", {})
-    init_object_range_m = config.get("init_object_range_m", pert_config.get("init_object_range_m", 0.0))
-    max_init_range_m = pert_config.get("max_init_range_m", 0.001)
+    init_range_m = config.get("init_range_m", pert_config.get("init_range_m", 0.001))
     max_move_m = config.get("max_move_m", pert_config.get("max_move_m", 0.05))
     base_bddl_text = fix_init_ranges(
         base_bddl_text,
-        init_object_range_m=init_object_range_m,
-        max_init_range_m=max_init_range_m,
+        init_range_m=init_range_m,
     )
 
     base_prompt = config["base_prompt"]
@@ -190,8 +195,7 @@ def generate_random_design_perturbations(
                 copy.deepcopy(base_bddl_text),
                 spec_dict,
                 perturbations,
-                init_object_range_m=init_object_range_m,
-                max_init_range_m=max_init_range_m,
+                init_range_m=init_range_m,
                 max_move_m=max_move_m,
             )
         except Exception as e:

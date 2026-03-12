@@ -33,8 +33,7 @@ max_move_m: 0.05
 # --- BDDL init box width (m) per object ---
 perturbations:
   bddl_spatial:
-    init_object_range_m: 0.0
-    max_init_range_m: 0.001
+    init_range_m: 0.001
     max_move_m: 0.05
 
 # For type: distract only

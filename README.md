@@ -23,7 +23,7 @@ Pipeline for generating perturbed LIBERO datasets and recording OpenVLA demonstr
 
 The system:
 
-1. **Generates perturbations** — Reads a base BDDL task, applies spatial and/or language perturbations, writes BDDL files and record configs. Init regions use a small fixed extent (`max_init_range_m`) so the env barely changes across runs and MuJoCo gets valid geom sizes.
+1. **Generates perturbations** — Reads a base BDDL task, applies spatial and/or language perturbations, writes BDDL files and record configs. Init regions use a small fixed box (`init_range_m`, side length in m) so the env barely changes across runs and MuJoCo gets valid geom sizes.
 2. **Dispatches jobs** — Submits SLURM jobs to record each perturbation with OpenVLA, manages concurrency and completion.
 3. **Post-processes** — Optionally renders videos from HDF5 recordings (controlled by `render_videos` in config) and runs evaluation (trajectory comparison, metrics).
 
@@ -70,6 +70,8 @@ Random-design treats **one perturbation run as one black-box evaluation**. Two m
 - **distract** — Input is (x, z) **position** where a new distractor object is added. The launcher generates `n_design` random positions in the given bounds, adds a distractor at each (x, z), and produces a **heatmap of metric vs distractor position**. You can specify the distractor object type in config.
 
 In both modes the output is the **VLA metric** from trajectory analysis (unperturbed vs perturbed); a BoTorch GP is fitted and a heatmap is saved.
+
+**Generator vs temporal:** A single component (`scripts/pipeline/random_design.py`) generates all BDDL and record YAML files from random sampling. The temporal engine (`libero.utils.temporal_perturbations`, used by `record.py`) does not generate perturbations—it only reads the generated config and applies/reverts each perturbation at the configured `perturbation_start_step` and `perturbation_stop_step` during the rollout.
 
 ### Usage
 
@@ -158,7 +160,7 @@ Plus the usual `bddl_files/`, `configs/`, `results/`, `analysis_results.json`, e
 
 - **`perturbations.types`** — List: `bddl_spatial`, `language` (or both).
 - **`perturbations.bddl_spatial`**:
-  - **`max_init_range_m`** — Extent (m) used for every init region when init is “exact,” so the env is nearly deterministic and MuJoCo gets positive geom size. Default `0.001` (1 mm).
+  - **`init_range_m`** — Side length (m) of the init placement box for each object region; small value (e.g. 0.001) keeps the env nearly deterministic and gives MuJoCo a positive geom size. Default `0.001` (1 mm).
 - **`max_move_m`** — Default max distance (m) for “move” perturbations (can be overridden per spec). Also used as the **default translation bounds** for [random-design mode](#random-design-mode-metric-vs-translation-heatmap): if bounds are not set, x and z are sampled in `(-max_move_m, max_move_m)`.
 - **`perturbation_specs`** — List of entries; each entry produces one run (one BDDL + one record config).
 
@@ -318,7 +320,7 @@ Set `num_demos: 1` in the config when testing. Ensure `device` and `cache_dir` i
 
 ### MuJoCo error: "size 0 must be positive in geom"
 
-Init regions had zero extent. The pipeline applies `fix_init_ranges` with `max_init_range_m` so every region has a small positive extent. Regenerate BDDLs with the launcher (e.g. `--generate-only --run-dir ./local_run`) so the fixed BDDLs are used.
+Init regions had zero extent. The pipeline applies `fix_init_ranges` with `init_range_m` so every region has a small positive extent. Regenerate BDDLs with the launcher (e.g. `--generate-only --run-dir ./local_run`) so the fixed BDDLs are used.
 
 ### Python codec / init_fs_encoding error on PACE-ICE
 

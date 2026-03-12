@@ -101,7 +101,7 @@ perturbations:
   types:
     - bddl_spatial
   bddl_spatial:
-    max_init_range_m: 0.001
+    init_range_m: 0.001
     perturbation_specs:
       - type: move
         objects: ["akita_black_bowl_1"]

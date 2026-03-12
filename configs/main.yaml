@@ -35,9 +35,8 @@ perturbations:
   
   # For BDDL spatial perturbations
   bddl_spatial:
-    # Max init range (m): when init is "exact" (init_object_range_m 0), every region gets this extent
-    # so the env barely changes across runs and MuJoCo gets a valid positive geom size. Default 0.001 (1 mm).
-    max_init_range_m: 0.001
+    # Init placement box: side length (m) for each object region. Small (e.g. 0.001) for minimal variation.
+    init_range_m: 0.001
     # List of perturbation combinations to apply
     # Each entry is a dict with perturbation type and target objects
     perturbation_specs:

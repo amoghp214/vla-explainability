@@ -207,7 +207,11 @@ def _center_with_fixed_extent(cx, cy, extent):
     half = extent / 2
     return [cx - half, cy - half, cx + half, cy + half]
 
-def fix_init_ranges(bddl_text, init_object_range_m=0.0, max_init_range_m=0.001):
+def fix_init_ranges(bddl_text, init_range_m=0.001):
+    """
+    Set every init region's :ranges to a small square box of side init_range_m (m) centered on the region.
+    Keeps the scene nearly deterministic; use a small value (e.g. 0.001).
+    """
     region_blocks = find_region_blocks(bddl_text)
     result = bddl_text
     for region_name, (start, end) in region_blocks.items():
@@ -215,14 +219,8 @@ def fix_init_ranges(bddl_text, init_object_range_m=0.0, max_init_range_m=0.001):
         match = RANGES_PATTERN.search(block)
         if match:
             coords = list(map(float, match.group(1).split()))
-            if init_object_range_m <= 0:
-                collapsed = _collapse_ranges_to_center(coords)
-                new_coords = _center_with_fixed_extent(collapsed[0], collapsed[1], max_init_range_m)
-            else:
-                new_coords = _collapse_ranges_to_center(coords)
-                half = init_object_range_m / 2
-                new_coords = [new_coords[0]-half, new_coords[1]-half,
-                               new_coords[0]+half, new_coords[1]+half]
+            collapsed = _collapse_ranges_to_center(coords)
+            new_coords = _center_with_fixed_extent(collapsed[0], collapsed[1], init_range_m)
             new_range = " ".join(f"{x:.6g}" for x in new_coords)
             block = block[:match.start(1)] + new_range + block[match.end(1):]
             result = result[:start] + block + result[end:]
@@ -557,8 +555,7 @@ def generate_move_spec_dict(bddl_text, object_names, max_move_m=0.05):
 # --------------------------
 
 def move_object(bddl_text, obj_name, obj_region_map, region_blocks,
-                init_object_range_m=0.0, max_move_m=0.05, max_init_range_m=0.001,
-                center_override=None, z_overrides=None, target_workspace="kitchen_table"):
+                init_range_m=0.001, max_move_m=0.05, center_override=None, z_overrides=None, target_workspace="kitchen_table"):
     """
     Move object's init region centre to a new XY position.
 
@@ -600,7 +597,7 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks,
         desired_cx = orig_cx + dx
         desired_cy = orig_cy + dy
         print(f"[MOVE] {obj_name} Δ=({dx:+.4f},{dy:+.4f}) → "
-              f"({desired_cx:.4f},{desired_cy:.4f}), init_range={init_object_range_m}m")
+              f"({desired_cx:.4f},{desired_cy:.4f}), init_range={init_range_m}m")
 
     # Collision resolution (updates desired_cx/cy if cavity placement chosen)
     final_cx, final_cy = _check_and_resolve_bddl_collision(
@@ -609,11 +606,8 @@ def move_object(bddl_text, obj_name, obj_region_map, region_blocks,
         z_overrides, target_workspace,
     )
 
-    if init_object_range_m <= 0:
-        new_coords = _center_with_fixed_extent(final_cx, final_cy, max_init_range_m)
-    else:
-        half = init_object_range_m / 2
-        new_coords = [final_cx-half, final_cy-half, final_cx+half, final_cy+half]
+    half = init_range_m / 2
+    new_coords = [final_cx-half, final_cy-half, final_cx+half, final_cy+half]
 
     new_range = " ".join(f"{x:.6g}" for x in new_coords)
     block = block[:match.start(1)] + new_range + block[match.end(1):]
@@ -870,17 +864,15 @@ def add_distractor(bddl_text, target_workspace=None, position=None, object_type=
 # Apply perturbations
 # --------------------------
 
-def apply_perturbations_kitchen(bddl_text, perturbations, init_object_range_m=0.0,
-                                 max_move_m=0.05, max_init_range_m=0.001,
-                                 perturbation_spec_dict=None):
+def apply_perturbations_kitchen(bddl_text, perturbations, init_range_m=0.001,
+                                 max_move_m=0.05, perturbation_spec_dict=None):
     """Deprecated alias — use apply_perturbations() directly."""
-    return apply_perturbations(bddl_text, perturbations, init_object_range_m,
-                               max_move_m, max_init_range_m, perturbation_spec_dict)
+    return apply_perturbations(bddl_text, perturbations, init_range_m,
+                               max_move_m, perturbation_spec_dict)
 
 
-def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0,
-                         max_move_m=0.05, max_init_range_m=0.001,
-                         perturbation_spec_dict=None):
+def apply_perturbations(bddl_text, perturbations, init_range_m=0.001,
+                         max_move_m=0.05, perturbation_spec_dict=None):
     """
     Apply perturbations to any LIBERO scene type.
 
@@ -892,10 +884,9 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0,
             - "color": list of object names to change color
             - "replace": list of object names to replace
             - "distractor": list of None values (count determines number of distractors)
-        init_object_range_m: Size of init region (m). 0 = use max_init_range_m; >0 = box.
+        init_range_m: Side length (m) of the init placement box for each region. Small value (e.g. 0.001) for minimal variation.
         max_move_m: Max distance (m) from unperturbed center (used when perturbation_spec_dict not provided for move).
-        max_init_range_m: Max extent (m) when init_object_range_m <= 0. Set in config YAML.
-        perturbation_spec_dict: Optional spec dict, e.g. {"move": {obj_name: [x, y], ...}}. When provided for move, uses these centers instead of random. 
+        perturbation_spec_dict: Optional spec dict, e.g. {"move": {obj_name: [x, y], ...}}. When provided for move, uses these centers instead of random.
         For distractor, can be {"distractor": [[x1, y1], [x2, y2], ...]} to place each distractor at the given (x, y) table-plane position.
 
     Returns
@@ -937,8 +928,7 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0,
     print(f"[DEBUG] Workspace: {target_workspace}")
     print(f"[DEBUG] Object-Region map: {obj_region_map}")
     print(f"[DEBUG] Regions: {list(region_blocks.keys())}")
-    print(f"[DEBUG] init_object_range_m={init_object_range_m}, "
-          f"max_move_m={max_move_m}, max_init_range_m={max_init_range_m}")
+    print(f"[DEBUG] init_range_m={init_range_m}, max_move_m={max_move_m}")
 
     z_overrides: Dict[str, Tuple[float, float, float]] = {}
 
@@ -951,7 +941,7 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0,
                     center_override = perturbation_spec_dict["move"][obj_name]
                 bddl_text = move_object(
                     bddl_text, obj_name, obj_region_map, region_blocks,
-                    init_object_range_m, max_move_m, max_init_range_m,
+                    init_range_m, max_move_m,
                     center_override=center_override,
                     z_overrides=z_overrides,
                     target_workspace=target_workspace,
@@ -981,7 +971,7 @@ def apply_perturbations(bddl_text, perturbations, init_object_range_m=0.0,
             bddl_text = add_distractor(bddl_text, target_workspace, position=pos, object_type=distractor_object_type, z_overrides=z_overrides)
 
     # Ensure every region in the scene has minimal extent (all objects, not just perturbed ones)
-    bddl_text = fix_init_ranges(bddl_text, init_object_range_m=init_object_range_m, max_init_range_m=max_init_range_m)
+    bddl_text = fix_init_ranges(bddl_text, init_range_m=init_range_m)
     return bddl_text, z_overrides
 
 # --------------------------

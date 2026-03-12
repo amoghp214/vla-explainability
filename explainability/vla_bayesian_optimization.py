@@ -118,12 +118,10 @@ class VLABayesianOptimization:
         self._base_bddl_text = read_bddl(str(base_bddl))
         pert_config = self.config.get("perturbations", {})
         bddl_spatial = pert_config.get("bddl_spatial", {})
-        init_object_range_m = self.config.get("init_object_range_m", bddl_spatial.get("init_object_range_m", 0.0))
-        max_init_range_m = bddl_spatial.get("max_init_range_m", 0.001)
+        init_range_m = self.config.get("init_range_m", bddl_spatial.get("init_range_m", 0.001))
         self._base_bddl_text = fix_init_ranges(
             self._base_bddl_text,
-            init_object_range_m=init_object_range_m,
-            max_init_range_m=max_init_range_m,
+            init_range_m=init_range_m,
         )
         return self._base_bddl_text
 
@@ -132,8 +130,7 @@ class VLABayesianOptimization:
         base_text = self._get_base_bddl_text()
         pert_config = self.config.get("perturbations", {})
         bddl_spatial = pert_config.get("bddl_spatial", {})
-        init_object_range_m = self.config.get("init_object_range_m", bddl_spatial.get("init_object_range_m", 0.0))
-        max_init_range_m = bddl_spatial.get("max_init_range_m", 0.001)
+        init_range_m = self.config.get("init_range_m", bddl_spatial.get("init_range_m", 0.001))
 
         # Unperturbed BDDL + config
         unperturbed_bddl = self.bddl_dir / "unperturbed.bddl"
@@ -191,16 +188,14 @@ class VLABayesianOptimization:
         perturbations = {"move": list(self.object_names)}
         pert_config = self.config.get("perturbations", {}).get("bddl_spatial", {})
         max_move_m = pert_config.get("max_move_m", 0.05)
-        init_object_range_m = self.config.get("init_object_range_m", 0.0)
-        max_init_range_m = pert_config.get("max_init_range_m", 0.001)
+        init_range_m = self.config.get("init_range_m", pert_config.get("init_range_m", 0.001))
 
         try:
             perturbed_bddl = apply_single_perturbation(
                 base_text,
                 spec_dict,
                 perturbations,
-                init_object_range_m=init_object_range_m,
-                max_init_range_m=max_init_range_m,
+                init_range_m=init_range_m,
                 max_move_m=max_move_m,
             )
         except Exception as e:
@@ -256,8 +251,7 @@ class VLABayesianOptimization:
         base_text = self._get_base_bddl_text()
         pert_config = self.config.get("perturbations", {}).get("bddl_spatial", {})
         max_move_m = pert_config.get("max_move_m", 0.05)
-        init_object_range_m = self.config.get("init_object_range_m", 0.0)
-        max_init_range_m = pert_config.get("max_init_range_m", 0.001)
+        init_range_m = self.config.get("init_range_m", pert_config.get("init_range_m", 0.001))
         perturbations = {"move": list(self.object_names)}
 
         infos = []
@@ -269,8 +263,7 @@ class VLABayesianOptimization:
                     base_text,
                     spec_dict,
                     perturbations,
-                    init_object_range_m=init_object_range_m,
-                    max_init_range_m=max_init_range_m,
+                    init_range_m=init_range_m,
                     max_move_m=max_move_m,
                 )
             except Exception as e:

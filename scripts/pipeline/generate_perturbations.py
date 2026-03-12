@@ -31,8 +31,7 @@ def _generate_bddl_spatial_perturbations(
     create_record_config_fn: Callable[[str, str, str], Dict],
     perturbation_info: List[Dict],
     start_id: int,
-    init_object_range_m: float,
-    max_init_range_m: float,
+    init_range_m: float,
 ) -> int:
     """Generate BDDL spatial perturbations; append to perturbation_info; return next pert_id."""
     pert_config = config["perturbations"]["bddl_spatial"]
@@ -71,9 +70,8 @@ def _generate_bddl_spatial_perturbations(
             perturbed_bddl, _z_overrides = apply_perturbations(
                 copy.deepcopy(base_bddl_text),
                 perturbations,
-                init_object_range_m=init_object_range_m,
+                init_range_m=init_range_m,
                 max_move_m=spec_max_move_m,
-                max_init_range_m=max_init_range_m,
                 perturbation_spec_dict=perturbation_spec_dict,
             )
             if not validate_bddl(perturbed_bddl):
@@ -217,12 +215,10 @@ def generate_perturbations_from_config(
     base_bddl_text = read_bddl(str(base_bddl))
     pert_config = config.get("perturbations", {})
     bddl_spatial = pert_config.get("bddl_spatial", {})
-    init_object_range_m = config.get("init_object_range_m", bddl_spatial.get("init_object_range_m", 0.0))
-    max_init_range_m = bddl_spatial.get("max_init_range_m", 0.001)
+    init_range_m = config.get("init_range_m", bddl_spatial.get("init_range_m", 0.001))
     base_bddl_text = fix_init_ranges(
         base_bddl_text,
-        init_object_range_m=init_object_range_m,
-        max_init_range_m=max_init_range_m,
+        init_range_m=init_range_m,
     )
 
     unperturbed_bddl_path = bddl_dir / "unperturbed.bddl"
@@ -258,8 +254,7 @@ def generate_perturbations_from_config(
             create_record_config_fn,
             perturbation_info,
             pert_id,
-            init_object_range_m=init_object_range_m,
-            max_init_range_m=max_init_range_m,
+            init_range_m=init_range_m,
         )
 
     if "language" in pert_types:

@@ -114,8 +114,7 @@ def apply_single_perturbation(
     base_bddl_text: str,
     perturbation_spec_dict: Dict[str, Any],
     perturbations: Dict[str, List],
-    init_object_range_m: float = 0.0,
-    max_init_range_m: float = 0.001,
+    init_range_m: float = 0.001,
     max_move_m: float = 0.05,
 ) -> str:
     """
@@ -125,8 +124,7 @@ def apply_single_perturbation(
         base_bddl_text: Base BDDL content (already fix_init_ranges applied if desired).
         perturbation_spec_dict: e.g. {"move": {obj_name: [x, z]}}.
         perturbations: e.g. {"move": ["akita_black_bowl_1"]} (list of objects to move).
-        init_object_range_m: Init region size (0 = use max_init_range_m).
-        max_init_range_m: Max extent when init_object_range_m <= 0.
+        init_range_m: Side length (m) of init placement box; small value for minimal variation.
         max_move_m: Fallback when spec not provided (unused if spec has move).
 
     Returns:
@@ -135,9 +133,8 @@ def apply_single_perturbation(
     perturbed, _ = apply_perturbations(
         copy.deepcopy(base_bddl_text),
         perturbations,
-        init_object_range_m=init_object_range_m,
+        init_range_m=init_range_m,
         max_move_m=max_move_m,
-        max_init_range_m=max_init_range_m,
         perturbation_spec_dict=perturbation_spec_dict,
     )
     if not validate_bddl(perturbed):
