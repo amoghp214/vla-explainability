@@ -269,10 +269,10 @@ def run_heatmap(
         results = json.load(f)
 
     # Build (X, Y) from design_points and results; skip points with errors
-    ids_to_xy = {p["id"]: (p["x"], p["y"]) for p in design_points}
+    ids_to_xyc = {p["id"]: (p["x"], p["z"], p.get("chunk", 0)) for p in design_points}
     X_list = []
     Y_list = []
-    for pid, (x, y) in ids_to_xy.items():
+    for pid, (x, y, chunk) in ids_to_xyc.items():
         r = results.get(pid)
         if r is None or "error" in r or "metric" not in r:
             continue
@@ -282,17 +282,18 @@ def run_heatmap(
             y_plot = origin_y + y
         else:
             x_plot, y_plot = x, y
-        X_list.append([x_plot, y_plot])
+        X_list.append([x_plot, y_plot, chunk])
         Y_list.append(r["success_rate"])
 
     # Get results from control perturbation (delta 0,0 -> absolute = origin when origin set)
     assert "control" in results, "Control results not found in analysis results"
     assert "metric" in results["control"], "Control metric not found in analysis results"
-    if origin_x is not None and origin_y is not None:
-        X_list.append([origin_x + 0.0, origin_y + 0.0])
-    else:
-        X_list.append([0.0, 0.0])
-    Y_list.append(results["control"]["success_rate"])
+    for c in range(num_temporal_chunks):
+        if origin_x is not None and origin_y is not None:
+            X_list.append([origin_x + 0.0, origin_y + 0.0, c])
+        else:
+            X_list.append([0.0, 0.0, c])
+        Y_list.append(results["control"]["success_rate"])
 
     if len(X_list) < 2:
         raise ValueError(f"Need at least 2 valid design points for heatmap; got {len(X_list)}")
@@ -308,19 +309,22 @@ def run_heatmap(
         bounds_x = (float(train_X_np[:, 0].min()), float(train_X_np[:, 0].max()))
     if bounds_y is None:
         bounds_y = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
+    bounds_c = [0, num_temporal_chunks-1]
     # When using absolute positions, convert passed-in (delta) bounds to absolute; data-derived bounds are already absolute
     if origin_x is not None and origin_y is not None and bounds_x_passed and bounds_y_passed:
         bounds_x = (origin_x + bounds_x[0], origin_x + bounds_x[1])
         bounds_y = (origin_y + bounds_y[0], origin_y + bounds_y[1])
-    bounds_dict = {"x": bounds_x, "y": bounds_y}
+    bounds_dict = {"x": bounds_x, "y": bounds_y, "c": bounds_c}
 
     # Normalize to [0, 1] for GP (BoTorch convention in botorch_random_demo)
     x_min, x_max = bounds_x[0], bounds_x[1]
     y_min, y_max = bounds_y[0], bounds_y[1]
+    c_min, c_max = bounds_c[0], bounds_c[1]
     train_X_norm = train_X.clone()
     train_X_norm[:, 0] = (train_X[:, 0] - x_min) / (x_max - x_min) if x_max > x_min else train_X[:, 0]
     train_X_norm[:, 1] = (train_X[:, 1] - y_min) / (y_max - y_min) if y_max > y_min else train_X[:, 1]
-    d = 2
+    train_X_norm[:, 2] = (train_X[:, 2] - c_min) / (c_max - c_min) if c_max > c_min else train_X[:, 2]
+    d = 3
 
     # Import BoTorch helpers from botorch_random_demo (avoids duplicating model/plot code)
     sys_path = list(__import__("sys").path)
@@ -337,36 +341,55 @@ def run_heatmap(
     rmse = calculate_rms_error(model, train_X_norm, train_Y)
     print(f"[INFO] Fitted {model_name} with RMSE on training data: {rmse:.4f}")
 
-    out_path = run_dir / "heatmap_metric_vs_translation.png"
+    out_dir = run_dir / "heatmaps"
+    out_dir.mkdir(exist_ok=True)
+    out_path = out_dir / "heatmap_metric_vs_translation.png"
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(6, 5))
-    title = "VLA metric vs (x, y) translation - RMSE: {:.4f}".format(rmse)
-    if origin_x is not None and origin_y is not None:
-        title = "VLA metric vs (x, y) absolute position - RMSE: {:.4f}".format(rmse)
-    elif design_type == "distract":
-        title = "VLA metric vs distractor position (x, y) - RMSE: {:.4f}".format(rmse)
-    plot_heatmap_fn(
-        bounds_dict,
-        model,
-        train_X_norm,
-        train_Y,
-        title,
-        step=step,
-        cmap="RdBu_r",
-        ax=ax,
-    )
-    if origin_x is not None and origin_y is not None:
-        ax.set_xlabel("x position (m)")
-        ax.set_ylabel("y position (m)")
-    elif design_type == "distract":
-        ax.set_xlabel("x position (m)")
-        ax.set_ylabel("y position (m)")
-    else:
-        ax.set_xlabel("x translation (m)")
-        ax.set_ylabel("y translation (m)")
-    plt.savefig(str(out_path), bbox_inches="tight")
-    plt.close()
-    print(f"[INFO] Saved heatmap to {out_path}")
+    for c in range(num_temporal_chunks):
+        # keep only rows for the current temporal chunk `c`
+        c_mask = torch.isclose(
+            train_X[:, 2],
+            torch.tensor(float(c), dtype=train_X.dtype, device=train_X.device),
+            atol=1e-8,
+        )
+        if c_mask.sum().item() == 0:
+            print(f"[WARN] No data for chunk {c}, skipping heatmap for this chunk.")
+            continue
+        train_X_norm_c = train_X_norm[c_mask]
+        train_Y_c = train_Y[c_mask]
+        assert train_X_norm_c.shape[0] == train_Y_c.shape[0], f"Chunk {c}: Mismatch in number of X and Y points after masking: {train_X_norm_c.shape[0]} vs {train_Y_c.shape[0]}"
+
+        xy_bounds_dict = {"x": bounds_dict["x"], "y": bounds_dict["y"]}  # only x & y bounds for plotting
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        title = "VLA metric vs (x, y) translation Chunk {} - RMSE: {:.4f}".format(c, rmse)
+        if origin_x is not None and origin_y is not None:
+            title = "VLA metric vs (x, y) absolute position Chunk {} - RMSE: {:.4f}".format(c, rmse)
+        elif design_type == "distract":
+            title = "VLA metric vs distractor position (x, y) Chunk {} - RMSE: {:.4f}".format(c, rmse)
+        plot_heatmap_fn(
+            # xy_bounds_dict,  # only x & y bounds are used for plotting
+            bounds_dict,
+            model,
+            train_X_norm_c, #[:, :2],  # only x, y for plotting
+            train_Y_c,
+            title,
+            step=step,
+            cmap="RdBu_r",
+            ax=ax,
+        )
+        if origin_x is not None and origin_y is not None:
+            ax.set_xlabel("x position (m)")
+            ax.set_ylabel("y position (m)")
+        elif design_type == "distract":
+            ax.set_xlabel("x position (m)")
+            ax.set_ylabel("y position (m)")
+        else:
+            ax.set_xlabel("x translation (m)")
+            ax.set_ylabel("y translation (m)")
+        plt.savefig(str(out_path), bbox_inches="tight")
+        plt.close()
+        print(f"[INFO] Saved heatmap to {out_path}")
     return out_path

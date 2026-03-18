@@ -274,6 +274,7 @@ def plot_heatmap(
     train_X_norm: torch.Tensor,
     train_Y: torch.Tensor,
     title: str,
+    chunk_idx: int = 0,
     step: float = 0.02,
     cmap: str = "RdBu_r",
     ax=None,
@@ -282,14 +283,16 @@ def plot_heatmap(
     bounds = get_bounds_tensor(bounds_dict)
     x_min, x_max = bounds[0, 0].item(), bounds[1, 0].item()
     y_min, y_max = bounds[0, 1].item(), bounds[1, 1].item()
+    c_min, c_max = bounds[0, 2].item(), bounds[1, 2].item()
     lower, upper = bounds[0].numpy(), bounds[1].numpy()
 
     x_vals = np.arange(x_min, x_max + step * 0.5, step)
     y_vals = np.arange(y_min, y_max + step * 0.5, step)
     xx, yy = np.meshgrid(x_vals, y_vals)
-    grid_real = np.stack([xx.ravel(), yy.ravel()], axis=1)
+    grid_real = np.stack([xx.ravel(), yy.ravel(), np.full(xx.size, float(chunk_idx))], axis=1)
     grid_norm = (grid_real - lower) / (upper - lower)
     X_grid = torch.from_numpy(grid_norm).double()
+
     # Some models (e.g. SaasFullyBayesianSingleTaskGP) use float; cast for compatibility
     ref = None
     if hasattr(model, "train_inputs") and model.train_inputs is not None and len(model.train_inputs) > 0:
