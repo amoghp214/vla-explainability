@@ -266,6 +266,76 @@ def _object_z_half_height(sim, obj_name: str) -> float:
     return max((_geom_z_half_height(sim.model.geom_type[g], sim.model.geom_size[g])
                 for g in geom_ids), default=0.05)
 
+def _get_all_fixture_bodies(sim, exclude_names=None):
+    """
+    Return body names of static fixtures (no free joint) that are
+    actually present in the scene (not parked off-screen).
+    Skips worldbody, robot links, and floor/ground planes.
+    """
+    exclude = set(exclude_names or [])
+    
+    # Collect body IDs that belong to free-jointed objects (already handled separately)
+    free_jointed_body_ids = set()
+    for jid in range(sim.model.njnt):
+        if sim.model.jnt_type[jid] == 0:  # free joint
+            free_jointed_body_ids.add(sim.model.jnt_bodyid[jid])
+
+    fixtures = []
+    for bid in range(1, sim.model.nbody):  # skip worldbody (0)
+        bname = sim.model.body_id2name(bid)
+        if bname in exclude:
+            continue
+        if bid in free_jointed_body_ids:
+            continue
+        # Skip robot links
+        if any(x in bname.lower() for x in ("robot", "gripper", "finger", "hand", "arm")):
+            continue
+        # Skip floor/ground
+        if any(x in bname.lower() for x in ("floor", "ground", "wall")):
+            continue
+        geom_ids = _get_geom_ids_for_body(sim, bid)
+        if not geom_ids:
+            continue
+        fixtures.append(bname)
+    return fixtures
+
+
+def _fixture_xy_radius(sim, body_name):
+    body_id = _get_body_id(sim, body_name)
+    geom_ids = _get_geom_ids_for_body(sim, body_id)
+    if not geom_ids:
+        return 0.0
+    return max(
+        _geom_xy_radius(sim.model.geom_type[g], sim.model.geom_size[g])
+        for g in geom_ids
+    )
+
+
+def _fixture_z_top(sim, body_name):
+    """Return the world-frame Z of the topmost geom surface for a fixture body."""
+    body_id = _get_body_id(sim, body_name)
+    geom_ids = _get_geom_ids_for_body(sim, body_id)
+    if not geom_ids:
+        return 0.0
+    tops = []
+    for g in geom_ids:
+        centre_z = sim.data.geom_xpos[g][2]
+        half_h = _geom_z_half_height(sim.model.geom_type[g], sim.model.geom_size[g])
+        tops.append(centre_z + half_h)
+    return max(tops)
+
+
+def _fixture_xy_centre(sim, body_name):
+    """Return the world-frame XY centre of a fixture body (mean of geom centres)."""
+    body_id = _get_body_id(sim, body_name)
+    geom_ids = _get_geom_ids_for_body(sim, body_id)
+    if not geom_ids:
+        pos = sim.data.body_xpos[body_id]
+        return float(pos[0]), float(pos[1])
+    xs = [sim.data.geom_xpos[g][0] for g in geom_ids]
+    ys = [sim.data.geom_xpos[g][1] for g in geom_ids]
+    return float(np.mean(xs)), float(np.mean(ys))
+
 
 # ---------------------------------------------------------------------------
 # Scene object enumeration (movable, on-table objects only)
@@ -384,74 +454,71 @@ def _resolve_placement(
     target_y: float,
     original_z: float,
 ) -> Tuple[float, float, float, str]:
-    """
-    Determine the final (x, y, z) at which to place *perturbed_obj* given
-    its intended table-plane target (target_x, target_y).
-
-    Resolution priority
-    -------------------
-    1. Check open articulated cavities (drawers/doors) whose XY footprint
-       overlaps the target.  If one is found, place the object INSIDE the
-       cavity at (cavity_centre_x, cavity_centre_y, cavity_centre_z).
-       The object goes into the drawer rather than on top of the chest.
-
-    2. Check all free-jointed scene objects for XY overlap.  If any are found,
-       stack the perturbed object on top of the highest one:
-           z_final = collider_z + collider_z_half + perturbed_z_half + Z_STACK_GAP_M
-
-    3. No collision → keep target_x, target_y, original_z unchanged.
-
-    Returns:
-        (final_x, final_y, final_z, reason_string)
-        reason_string is one of "no_collision", "placed_in_cavity:<body>",
-        "stacked_above:<obj1,obj2,...>".
-    """
     perturbed_radius = _object_xy_radius(sim, perturbed_obj)
     perturbed_z_half = _object_z_half_height(sim, perturbed_obj)
 
     # ------------------------------------------------------------------
-    # 1. Open cavity check (drawers / cabinet doors)
+    # 1. Static fixture collision check
+    #    If the overlapping fixture is an open cavity, place INSIDE.
+    #    Otherwise stack ON TOP.
     # ------------------------------------------------------------------
-    cavities = _find_open_cavities(sim)
-    for cavity in cavities:
-        cx, cy = cavity.centre_xyz[0], cavity.centre_xyz[1]
-        xy_dist = np.sqrt((target_x - cx)**2 + (target_y - cy)**2)
-        if xy_dist < cavity.xy_radius:
-            # Place the object at the cavity's XY centre and Z centre
-            final_z = float(cavity.centre_xyz[2])
-            reason = f"placed_in_cavity:{cavity.body_name}"
-            print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps open cavity "
-                  f"'{cavity.body_name}'. Placing inside cavity at "
-                  f"({cx:.4f}, {cy:.4f}, {final_z:.4f}).")
-            return cx, cy, final_z, reason
+    open_cavities = _find_open_cavities(sim)
+    open_cavity_body_names = {c.body_name: c for c in open_cavities}
+
+    fixture_names = _get_all_fixture_bodies(sim, exclude_names=[perturbed_obj])
+    fixture_colliders: List[str] = []
+    highest_fixture_top_z = original_z
+
+    for fname in fixture_names:
+        fx, fy = _fixture_xy_centre(sim, fname)
+        xy_dist = np.sqrt((target_x - fx)**2 + (target_y - fy)**2)
+        if xy_dist < perturbed_radius:
+            # Check if this colliding fixture is an open cavity
+            if fname in open_cavity_body_names:
+                cavity = open_cavity_body_names[fname]
+                cx, cy = cavity.centre_xyz[0], cavity.centre_xyz[1]
+                final_z = float(cavity.centre_xyz[2])
+                reason = f"placed_in_cavity:{fname}"
+                print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps open cavity "
+                      f"'{fname}'. Placing inside at ({cx:.4f}, {cy:.4f}, {final_z:.4f}).")
+                return cx, cy, final_z, reason
+
+            fixture_colliders.append(fname)
+            top_z = _fixture_z_top(sim, fname)
+            if top_z > highest_fixture_top_z:
+                highest_fixture_top_z = top_z
+
+    if fixture_colliders:
+        final_z = highest_fixture_top_z + perturbed_z_half + Z_STACK_GAP_M
+        reason = f"stacked_above_fixture:{','.join(fixture_colliders)}"
+        print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps fixture(s) {fixture_colliders} "
+              f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
+        return target_x, target_y, final_z, reason
 
     # ------------------------------------------------------------------
-    # 2. Free-jointed object collision check → stack on top
+    # 2. Free-jointed object collision check
     # ------------------------------------------------------------------
     scene_objects = _get_all_scene_objects(sim, exclude_names=[perturbed_obj])
-    colliders: List[str] = []
-    highest_top_z = original_z  # will be updated if colliders found
+    obj_colliders: List[str] = []
+    highest_obj_top_z = original_z
 
     for other in scene_objects:
         other_pose = _read_object_pose(sim, other)
         if other_pose is None:
             continue
-        other_radius = _object_xy_radius(sim, other)
         xy_dist = np.sqrt((target_x - other_pose[0])**2 + (target_y - other_pose[1])**2)
-        if xy_dist < perturbed_radius + other_radius:
-            colliders.append(other)
+        if xy_dist < perturbed_radius:
+            obj_colliders.append(other)
             other_z_half = _object_z_half_height(sim, other)
             top_z = other_pose[2] + other_z_half
-            if top_z > highest_top_z:
-                highest_top_z = top_z
+            if top_z > highest_obj_top_z:
+                highest_obj_top_z = top_z
 
-    if colliders:
-        # Stack perturbed object so its BOTTOM sits at the top of the highest collider
-        final_z = highest_top_z + perturbed_z_half + Z_STACK_GAP_M
-        reason = f"stacked_above:{','.join(colliders)}"
-        print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps {colliders} at "
-              f"({target_x:.4f}, {target_y:.4f}). "
-              f"Stacking on top → z={final_z:.4f} m.")
+    if obj_colliders:
+        final_z = highest_obj_top_z + perturbed_z_half + Z_STACK_GAP_M
+        reason = f"stacked_above:{','.join(obj_colliders)}"
+        print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps object(s) {obj_colliders} "
+              f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
         return target_x, target_y, final_z, reason
 
     # ------------------------------------------------------------------
