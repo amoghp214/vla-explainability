@@ -39,8 +39,8 @@ RANGES_PATTERN = getattr(_pert_utils, "RANGES_PATTERN", re.compile(
 
 def _get_object_centers_from_bddl(bddl_text: str, object_names: List[str]) -> Dict[str, tuple]:
     """
-    Get (cx, cy) for each object from base BDDL region ranges (table plane x, y).
-    Returns dict {object_name: (cx, cy)}.
+    Get (cx, cz) for each object from base BDDL region ranges.
+    Returns dict {object_name: (cx, cz)}.
     """
     region_blocks = find_region_blocks(bddl_text)
     obj_region_map = parse_object_region_map(bddl_text, region_blocks)
@@ -56,16 +56,16 @@ def _get_object_centers_from_bddl(bddl_text: str, object_names: List[str]) -> Di
             continue
         coords = list(map(float, match.group(1).split()))
         cx = (coords[0] + coords[2]) / 2
-        cy = (coords[1] + coords[3]) / 2
-        centers[obj_name] = (cx, cy)
+        cz = (coords[1] + coords[3]) / 2
+        centers[obj_name] = (cx, cz)
     return centers
 
 
 def get_object_centers_from_bddl(bddl_text: str, object_names: List[str]) -> Dict[str, tuple]:
     """
     Public wrapper for _get_object_centers_from_bddl.
-    Get (cx, cy) for each object from base BDDL region ranges (table plane x, y).
-    Returns dict {object_name: (cx, cy)}.
+    Get (cx, cz) for each object from base BDDL region ranges.
+    Returns dict {object_name: (cx, cz)}.
     """
     return _get_object_centers_from_bddl(bddl_text, object_names)
 
@@ -78,35 +78,35 @@ def params_to_move_spec_dict(
     """
     Map continuous BO params to perturbation_spec_dict for move type.
 
-    Option A (recommended): params have 'dx', 'dy' -> center = (cx + dx, cy + dy).
-    Option B: params have 'x', 'y' -> use (x, y) directly as new center.
+    Option A (recommended): params have 'dx', 'dz' -> center = (cx + dx, cz + dz).
+    Option B: params have 'x', 'z' -> use (x, z) directly as new center.
 
     Args:
         base_bddl_text: BDDL file content (with init region ranges).
         object_names: List of object names to move (e.g. ["akita_black_bowl_1"]).
-        params: Dict with either ('dx', 'dy') or ('x', 'y'). For multiple objects
-                with dx/dy, same delta is applied to all; for x/y, one object only or pass per-object later.
+        params: Dict with either ('dx', 'dz') or ('x', 'z'). For multiple objects
+                with dx/dz, same delta is applied to all; for x/z, one object only or pass per-object later.
 
     Returns:
-        perturbation_spec_dict: {"move": {obj_name: [x, y], ...}} in table-plane coords.
+        perturbation_spec_dict: {"move": {obj_name: [x, z], ...}} in table-plane coords.
     """
-    if "x" in params and "y" in params:
+    if "x" in params and "z" in params:
         # Option B: absolute coords (single object typically)
-        x, y = params["x"], params["y"]
+        x, z = params["x"], params["z"]
         if len(object_names) != 1:
-            raise ValueError("params_to_move_spec_dict: 'x'/'y' mode requires exactly one object")
-        return {"move": {object_names[0]: [x, y]}}
+            raise ValueError("params_to_move_spec_dict: 'x'/'z' mode requires exactly one object")
+        return {"move": {object_names[0]: [x, z]}}
 
-    # Option A: dx, dy from unperturbed center
+    # Option A: dx, dz from unperturbed center
     dx = params.get("dx", 0.0)
-    dy = params.get("dy", 0.0)
+    dz = params.get("dz", 0.0)
     centers = _get_object_centers_from_bddl(base_bddl_text, object_names)
     move_spec = {}
     for obj_name in object_names:
         if obj_name not in centers:
             continue
-        cx, cy = centers[obj_name]
-        move_spec[obj_name] = [round(cx + dx, 4), round(cy + dy, 4)]
+        cx, cz = centers[obj_name]
+        move_spec[obj_name] = [round(cx + dx, 4), round(cz + dz, 4)]
     return {"move": move_spec} if move_spec else {}
 
 
@@ -122,7 +122,7 @@ def apply_single_perturbation(
 
     Args:
         base_bddl_text: Base BDDL content (already fix_init_ranges applied if desired).
-        perturbation_spec_dict: e.g. {"move": {obj_name: [x, y]}}.
+        perturbation_spec_dict: e.g. {"move": {obj_name: [x, z]}}.
         perturbations: e.g. {"move": ["akita_black_bowl_1"]} (list of objects to move).
         init_range_m: Side length (m) of init placement box; small value for minimal variation.
         max_move_m: Fallback when spec not provided (unused if spec has move).

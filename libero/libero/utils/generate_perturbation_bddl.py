@@ -765,7 +765,7 @@ def add_distractor(bddl_text, target_workspace=None, position=None, object_type=
     new_obj = f"{obj_type}_{random.randint(100,999)}"
     region_name = f"{new_obj}_init_region"
 
-    # Generate ranges: (x_min, y_min, x_max, y_max) — table-plane x, y
+    # Generate ranges: (x_min, y_min, x_max, y_max) — table-plane x, z
     if position is not None:
         cx, cy = position[0], position[1]
     else:

@@ -15,13 +15,13 @@ num_demos: 2
 noise_std: 0.001
 
 # --- Perturbation type and object ---
-# type: move = bounds are deltas (m) from object initial position. type: distract = bounds are actual (x,y) coords (m).
+# type: move = bounds are deltas (m) from object initial position. type: distract = bounds are actual (x,z) coords (m).
 random_design:
   type: move
   n_design: 20
   seed: 1
   bounds_x: [-0.1, 0.1]
-  bounds_y: [-0.1, 0.1]
+  bounds_z: [-0.1, 0.1]
   object_names: ["akita_black_bowl_1"]
   uniform: true
 

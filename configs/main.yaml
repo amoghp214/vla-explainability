@@ -167,11 +167,11 @@ random_design:
   n_design: 120
   seed: 100
   bounds_x: [-0.1, 0.1]
-  bounds_y: [-0.1, 0.1]
+  bounds_z: [-0.1, 0.1]
   object_names: ["akita_black_bowl_1"]
   uniform: true
 
-# When using --random-design: temporal window; perturbation range comes from random_design.bounds_x / bounds_y
+# When using --random-design: temporal window; perturbation range comes from random_design.bounds_x / bounds_z
 perturbation_start_step: 0
 perturbation_stop_step: 99999
 

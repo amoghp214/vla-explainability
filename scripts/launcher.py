@@ -4,7 +4,7 @@ Launcher for the VLA explainability pipeline: random-design + temporal (only wor
 
 Workflow:
   1. Generate unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl (n+2 BDDL files).
-     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, y_i) from bounds.
+     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, z_i) from bounds.
   2. Generate one YAML per run; each rd_i.yaml points to rd_i.bddl and sets temporal_perturbations
      at perturbation_start_step/perturbation_stop_step so the move is applied during recording.
   3. Dispatch SLURM jobs (record.py). Videos are rendered inside record.py.
@@ -52,7 +52,7 @@ class Launcher:
         self.jobs_dir = rd.jobs_dir
         self.config = rd.config
         self.perturbation_info = []
-        self.design_points: List[dict] = []  # [{id, x, y}, ...]
+        self.design_points: List[dict] = []  # [{id, x, z}, ...]
         self.random_design_type: str = "move"  # "move" or "distract"
 
         print(f"[INFO] Run directory: {self.run_dir}")
@@ -73,7 +73,7 @@ class Launcher:
         self,
         n_design: int,
         bounds_x: Tuple[float, float],
-        bounds_y: Tuple[float, float],
+        bounds_z: Tuple[float, float],
         object_names: Optional[List[str]],
         seed: int,
         include_control: bool = True,
@@ -84,7 +84,7 @@ class Launcher:
         distractor_object_types: Optional[List[str]] = None,
     ) -> None:
         """Generate random-design perturbations (move or distract) for heatmap mode."""
-        label = "x, y translation" if design_type == "move" else "distractor position (x, y)"
+        label = "x, z translation" if design_type == "move" else "distractor position (x, z)"
         print(f"\n[INFO] Generating random-design perturbations ({label})...")
         self.perturbation_info, self.design_points = generate_random_design_perturbations(
             config=self.config,
@@ -94,7 +94,7 @@ class Launcher:
             create_record_config_fn=self._create_record_config_fn,
             n_design=n_design,
             bounds_x=bounds_x,
-            bounds_y=bounds_y,
+            bounds_z=bounds_z,
             object_names=object_names,
             seed=seed,
             include_control=include_control,
@@ -150,9 +150,9 @@ class Launcher:
             project_root=PROJECT_ROOT,
         )
 
-    def run_heatmap(self, bounds_x: Tuple[float, float], bounds_y: Tuple[float, float]) -> None:
-        """Build heatmap of VLA metric vs (x, y). For move: uses absolute positions (original + delta). For distract: (x, y) are already absolute."""
-        origin_x, origin_y = None, None
+    def run_heatmap(self, bounds_x: Tuple[float, float], bounds_z: Tuple[float, float]) -> None:
+        """Build heatmap of VLA metric vs (x, z). For move: uses absolute positions (original + delta). For distract: (x, z) are already absolute."""
+        origin_x, origin_z = None, None
         if self.random_design_type == "move":
             try:
                 base_bddl = Path(self.config["base_bddl_file"])
@@ -164,8 +164,8 @@ class Launcher:
                     if object_names and len(object_names) >= 1:
                         centers = get_object_centers_from_bddl(base_bddl_text, object_names)
                         if object_names[0] in centers:
-                            cx, cy = centers[object_names[0]]
-                            origin_x, origin_y = float(cx), float(cy)
+                            cx, cz = centers[object_names[0]]
+                            origin_x, origin_z = float(cx), float(cz)
             except Exception as e:
                 print(f"[WARN] Could not get object origin for absolute-position heatmap: {e}")
         run_heatmap(
@@ -173,12 +173,12 @@ class Launcher:
             design_points=self.design_points,
             analysis_results_path=self.run_dir / "analysis_results.json",
             bounds_x=bounds_x,
-            bounds_y=bounds_y,
+            bounds_z=bounds_z,
             model_name="SingleTaskGP",
             step=0.001,
             project_root=PROJECT_ROOT,
             origin_x=origin_x,
-            origin_y=origin_y,
+            origin_z=origin_z,
             design_type=self.random_design_type,
         )
 
@@ -186,7 +186,7 @@ class Launcher:
         self,
         n_design: int,
         bounds_x: Tuple[float, float],
-        bounds_y: Tuple[float, float],
+        bounds_z: Tuple[float, float],
         object_names: Optional[List[str]],
         seed: int,
         generate_only: bool = False,
@@ -196,14 +196,14 @@ class Launcher:
         distractor_object_type: Optional[str] = None,
         distractor_object_types: Optional[List[str]] = None,
     ) -> None:
-        """Run pipeline: generate (x,y) perturbations from bounds -> dispatch -> evaluate -> heatmap."""
+        """Run pipeline: generate (x,z) perturbations from bounds -> dispatch -> evaluate -> heatmap."""
         self.random_design_type = design_type
-        title = "metric vs x, y translation" if design_type == "move" else "metric vs distractor position (x, y)"
+        title = "metric vs x, z translation" if design_type == "move" else "metric vs distractor position (x, z)"
         print("=" * 80)
         print("VLA Explainability Pipeline (random-design + temporal)")
         print("=" * 80)
         print(f"Run directory: {self.run_dir}")
-        print(f"type={design_type}, n_design={n_design}, bounds_x={bounds_x}, bounds_y={bounds_y}, seed={seed}")
+        print(f"type={design_type}, n_design={n_design}, bounds_x={bounds_x}, bounds_z={bounds_z}, seed={seed}")
         if design_type == "move":
             print(f"object={object_names}")
         else:
@@ -211,7 +211,7 @@ class Launcher:
         self.generate_random_design_perturbations(
             n_design=n_design,
             bounds_x=bounds_x,
-            bounds_y=bounds_y,
+            bounds_z=bounds_z,
             object_names=object_names,
             seed=seed,
             include_control=True,
@@ -232,7 +232,7 @@ class Launcher:
             print("[INFO] Evaluation was disabled in config; enabling for random-design heatmap.")
             self.config.setdefault("evaluation", {})["enabled"] = True
         self.run_evaluation()
-        self.run_heatmap(bounds_x=bounds_x, bounds_y=bounds_y)
+        self.run_heatmap(bounds_x=bounds_x, bounds_z=bounds_z)
         print("\n" + "=" * 80)
         print("Random-design pipeline complete!")
         print(f"Results and heatmap in: {self.run_dir}")
@@ -283,7 +283,7 @@ def main() -> None:
         "--bounds",
         type=str,
         default=None,
-        help="Comma-separated low,high for both x and y in meters (e.g. -0.05,0.05). Overrides config random_design.bounds_x/y.",
+        help="Comma-separated low,high for both x and z in meters (e.g. -0.05,0.05). Overrides config random_design.bounds_x/z.",
     )
     parser.add_argument(
         "--objects",
@@ -317,17 +317,17 @@ def main() -> None:
     if args.bounds:
         try:
             low, high = map(float, args.bounds.split(","))
-            bounds_x = bounds_y = (low, high)
+            bounds_x = bounds_z = (low, high)
         except Exception:
-            bounds_x = bounds_y = (-0.05, 0.05)
+            bounds_x = bounds_z = (-0.05, 0.05)
     else:
         bx = rd_config.get("bounds_x")
-        by = rd_config.get("bounds_y")
-        if bx is not None and by is not None:
+        bz = rd_config.get("bounds_z")
+        if bx is not None and bz is not None:
             bounds_x = tuple(bx) if isinstance(bx, (list, tuple)) else (-0.05, 0.05)
-            bounds_y = tuple(by) if isinstance(by, (list, tuple)) else (-0.05, 0.05)
+            bounds_z = tuple(bz) if isinstance(bz, (list, tuple)) else (-0.05, 0.05)
         else:
-            bounds_x = bounds_y = (-0.05, 0.05)
+            bounds_x = bounds_z = (-0.05, 0.05)
     object_names = None
     if design_type == "move":
         object_names = args.objects if args.objects is not None else rd_config.get("object_names")
@@ -344,7 +344,7 @@ def main() -> None:
     launcher.run_random_design(
         n_design=n_design,
         bounds_x=bounds_x,
-        bounds_y=bounds_y,
+        bounds_z=bounds_z,
         object_names=object_names,
         seed=seed,
         generate_only=args.generate_only,
