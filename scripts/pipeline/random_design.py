@@ -4,7 +4,7 @@ Random-design pipeline: single generator for BDDL + YAML from random sampling.
 This module is the single place that generates all perturbation BDDL and record YAML
 files from random (or uniform) sampling of perturbation coordinates. It produces
 unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl and corresponding YAMLs;
-each rd_i.yaml includes temporal_perturbations with the sampled (x_i, z_i) and
+each rd_i.yaml includes temporal_perturbations with the sampled (x_i, y_i) and
 start_step/end_step from config.
 
 The temporal engine (libero.utils.temporal_perturbations / record.py) does not generate
@@ -62,7 +62,7 @@ def generate_random_design_perturbations(
     create_record_config_fn: Callable[..., Dict],
     n_design: int,
     bounds_x: Tuple[float, float],
-    bounds_z: Tuple[float, float],
+    bounds_y: Tuple[float, float],
     object_names: Optional[List[str]] = None,
     seed: int = 1,
     include_control: bool = True,
@@ -75,7 +75,7 @@ def generate_random_design_perturbations(
     """
     Generate unperturbed + control + n_design design points. Produces n+2 BDDL files:
     unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl. Each rd_i has its own BDDL
-    (object or distractor at (x_i, z_i)) and rd_i.yaml with temporal_perturbations at
+    (object or distractor at (x_i, y_i)) and rd_i.yaml with temporal_perturbations at
     start_step/end_step so the same perturbation is applied during recording.
     """
     if design_type not in ("move", "distract"):
@@ -98,8 +98,8 @@ def generate_random_design_perturbations(
     init_range_m = config.get("init_range_m", pert_config.get("init_range_m", 0.001))
     # Perturbation magnitude/coordinates come from bounds only; derive fallback for apply_single_perturbation (only used when spec is incomplete).
     x_low, x_high = bounds_x
-    z_low, z_high = bounds_z
-    fallback_max_move = max(abs(x_high - x_low), abs(z_high - z_low)) * 0.5 if (bounds_x and bounds_z) else 0.05
+    y_low, y_high = bounds_y
+    fallback_max_move = max(abs(x_high - x_low), abs(y_high - y_low)) * 0.5 if (bounds_x and bounds_y) else 0.05
     base_bddl_text = fix_init_ranges(
         base_bddl_text,
         init_range_m=init_range_m,
@@ -148,49 +148,49 @@ def generate_random_design_perturbations(
 
     temporal_template = _temporal_spec_from_config(config, design_type)
     x_low, x_high = bounds_x
-    z_low, z_high = bounds_z
+    y_low, y_high = bounds_y
 
     if design_type == "move":
         centers = get_object_centers_from_bddl(base_bddl_text, object_names)
         if object_names[0] not in centers:
             raise ValueError(f"Object {object_names[0]} not found in base BDDL.")
-        cx, cz = centers[object_names[0]]
+        cx, cy = centers[object_names[0]]
         perturbations = {"move": list(object_names)}
     else:
         perturbations = {"distractor": [None] * distractor_count}
 
     if uniform:
-        xz_ratio = (x_high - x_low) / (z_high - z_low) if (z_high - z_low) != 0 else 1.0
-        num_z = max(1, int(np.floor(np.sqrt(n_design / xz_ratio))))
-        num_x = max(1, int(np.floor(xz_ratio * num_z)))
+        xy_ratio = (x_high - x_low) / (y_high - y_low) if (y_high - y_low) != 0 else 1.0
+        num_y = max(1, int(np.floor(np.sqrt(n_design / xy_ratio))))
+        num_x = max(1, int(np.floor(xy_ratio * num_y)))
         uniform_x = np.linspace(x_low, x_high, num_x)
-        uniform_z = np.linspace(z_low, z_high, num_z)
-        uniform_xz_pairs = [(float(x), float(z)) for x in uniform_x for z in uniform_z]
-        while len(uniform_xz_pairs) < n_design:
-            uniform_xz_pairs.append((float(np.random.uniform(x_low, x_high)), float(np.random.uniform(z_low, z_high))))
-        uniform_xz_pairs = uniform_xz_pairs[:n_design]
+        uniform_y = np.linspace(y_low, y_high, num_y)
+        uniform_xy_pairs = [(float(x), float(y)) for x in uniform_x for y in uniform_y]
+        while len(uniform_xy_pairs) < n_design:
+            uniform_xy_pairs.append((float(np.random.uniform(x_low, x_high)), float(np.random.uniform(y_low, y_high))))
+        uniform_xy_pairs = uniform_xy_pairs[:n_design]
     else:
-        uniform_xz_pairs = None
+        uniform_xy_pairs = None
 
     for i in range(n_design):
-        if uniform and uniform_xz_pairs is not None:
-            x, z = uniform_xz_pairs[i]
+        if uniform and uniform_xy_pairs is not None:
+            x, y = uniform_xy_pairs[i]
         else:
             x = float(np.random.uniform(x_low, x_high))
-            z = float(np.random.uniform(z_low, z_high))
+            y = float(np.random.uniform(y_low, y_high))
         pert_id = f"rd_{i}"
 
         if design_type == "move":
-            x_abs, z_abs = cx + x, cz + z
-            spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "z": z_abs})
-            design_x, design_z = x, z
+            x_abs, y_abs = cx + x, cy + y
+            spec_dict = params_to_move_spec_dict(base_bddl_text, object_names, {"x": x_abs, "y": y_abs})
+            design_x, design_y = x, y
         else:
-            spec_dict = {"distractor": [[float(x), float(z)]] * distractor_count}
+            spec_dict = {"distractor": [[float(x), float(y)]] * distractor_count}
             if distractor_object_type is not None:
                 spec_dict["distractor_object_type"] = distractor_object_type
             elif distractor_object_types:
                 spec_dict["distractor_object_type"] = np.random.choice(distractor_object_types).item()
-            design_x, design_z = x, z
+            design_x, design_y = x, y
 
         try:
             perturbed_bddl = apply_single_perturbation(
@@ -201,7 +201,7 @@ def generate_random_design_perturbations(
                 max_move_m=fallback_max_move,
             )
         except Exception as e:
-            print(f"[WARN] Random design point {pert_id} (x={x:.4f}, z={z:.4f}) failed: {e}")
+            print(f"[WARN] Random design point {pert_id} (x={x:.4f}, y={y:.4f}) failed: {e}")
             continue
 
         pert_bddl_path = bddl_dir / f"{pert_id}.bddl"
@@ -212,9 +212,9 @@ def generate_random_design_perturbations(
         spec["start_step"] = int(spec.get("start_step", 0))
         spec["end_step"] = int(spec.get("end_step", 99999))
         if design_type == "move":
-            spec["delta_xy"] = [round(x, 4), round(z, 4)]
+            spec["delta_xy"] = [round(x, 4), round(y, 4)]
         else:
-            spec["distractor_xy"] = [round(x, 4), round(z, 4)]
+            spec["distractor_xy"] = [round(x, 4), round(y, 4)]
 
         record_config = create_record_config_fn(
             perturbation_id=pert_id,
@@ -230,11 +230,11 @@ def generate_random_design_perturbations(
             "config_file": str(config_path),
             "prompt": base_prompt,
             "type": "random_design_move" if design_type == "move" else "random_design_distract",
-            "description": f"rd_{i} (x={design_x:.4f}, z={design_z:.4f})",
+            "description": f"rd_{i} (x={design_x:.4f}, y={design_y:.4f})",
             "x": design_x,
-            "z": design_z,
+            "y": design_y,
         })
-        design_points.append({"id": pert_id, "x": design_x, "z": design_z})
+        design_points.append({"id": pert_id, "x": design_x, "y": design_y})
 
     return perturbation_info, design_points
 
@@ -244,19 +244,19 @@ def run_heatmap(
     design_points: List[Dict[str, Any]],
     analysis_results_path: Optional[Path] = None,
     bounds_x: Optional[Tuple[float, float]] = None,
-    bounds_z: Optional[Tuple[float, float]] = None,
+    bounds_y: Optional[Tuple[float, float]] = None,
     model_name: str = "SingleTaskGP",
     step: float = 0.02,
     project_root: Optional[Path] = None,
     origin_x: Optional[float] = None,
-    origin_z: Optional[float] = None,
+    origin_y: Optional[float] = None,
     design_type: str = "move",
 ) -> Path:
     """
-    Load analysis results and design points, fit BoTorch GP, plot heatmap of metric vs x, z.
-    If origin_x and origin_z are provided (move mode), (x, z) are treated as deltas and
+    Load analysis results and design points, fit BoTorch GP, plot heatmap of metric vs x, y.
+    If origin_x and origin_y are provided (move mode), (x, y) are treated as deltas and
     the heatmap plots absolute positions (original + delta). For distract mode or when origin
-    is not set, (x, z) are plotted as-is. design_type "distract" uses "position" axis labels.
+    is not set, (x, y) are plotted as-is. design_type "distract" uses "position" axis labels.
     Saves heatmap to run_dir / "heatmap_metric_vs_translation.png" and returns that path.
     """
     project_root = project_root or PROJECT_ROOT
@@ -268,27 +268,27 @@ def run_heatmap(
         results = json.load(f)
 
     # Build (X, Y) from design_points and results; skip points with errors
-    ids_to_xy = {p["id"]: (p["x"], p["z"]) for p in design_points}
+    ids_to_xy = {p["id"]: (p["x"], p["y"]) for p in design_points}
     X_list = []
     Y_list = []
-    for pid, (x, z) in ids_to_xy.items():
+    for pid, (x, y) in ids_to_xy.items():
         r = results.get(pid)
         if r is None or "error" in r or "metric" not in r:
             continue
         # Plot absolute position (original + delta) when origin is provided
-        if origin_x is not None and origin_z is not None:
+        if origin_x is not None and origin_y is not None:
             x_plot = origin_x + x
-            z_plot = origin_z + z
+            y_plot = origin_y + y
         else:
-            x_plot, z_plot = x, z
-        X_list.append([x_plot, z_plot])
+            x_plot, y_plot = x, y
+        X_list.append([x_plot, y_plot])
         Y_list.append(r["metric"])
 
     # Get results from control perturbation (delta 0,0 -> absolute = origin when origin set)
     assert "control" in results, "Control results not found in analysis results"
     assert "metric" in results["control"], "Control metric not found in analysis results"
-    if origin_x is not None and origin_z is not None:
-        X_list.append([origin_x + 0.0, origin_z + 0.0])
+    if origin_x is not None and origin_y is not None:
+        X_list.append([origin_x + 0.0, origin_y + 0.0])
     else:
         X_list.append([0.0, 0.0])
     Y_list.append(results["control"]["metric"])
@@ -302,23 +302,23 @@ def run_heatmap(
     train_Y = torch.from_numpy(train_Y_np).double()
 
     bounds_x_passed = bounds_x is not None
-    bounds_z_passed = bounds_z is not None
+    bounds_y_passed = bounds_y is not None
     if bounds_x is None:
         bounds_x = (float(train_X_np[:, 0].min()), float(train_X_np[:, 0].max()))
-    if bounds_z is None:
-        bounds_z = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
+    if bounds_y is None:
+        bounds_y = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
     # When using absolute positions, convert passed-in (delta) bounds to absolute; data-derived bounds are already absolute
-    if origin_x is not None and origin_z is not None and bounds_x_passed and bounds_z_passed:
+    if origin_x is not None and origin_y is not None and bounds_x_passed and bounds_y_passed:
         bounds_x = (origin_x + bounds_x[0], origin_x + bounds_x[1])
-        bounds_z = (origin_z + bounds_z[0], origin_z + bounds_z[1])
-    bounds_dict = {"x": bounds_x, "z": bounds_z}
+        bounds_y = (origin_y + bounds_y[0], origin_y + bounds_y[1])
+    bounds_dict = {"x": bounds_x, "y": bounds_y}
 
     # Normalize to [0, 1] for GP (BoTorch convention in botorch_random_demo)
     x_min, x_max = bounds_x[0], bounds_x[1]
-    z_min, z_max = bounds_z[0], bounds_z[1]
+    y_min, y_max = bounds_y[0], bounds_y[1]
     train_X_norm = train_X.clone()
     train_X_norm[:, 0] = (train_X[:, 0] - x_min) / (x_max - x_min) if x_max > x_min else train_X[:, 0]
-    train_X_norm[:, 1] = (train_X[:, 1] - z_min) / (z_max - z_min) if z_max > z_min else train_X[:, 1]
+    train_X_norm[:, 1] = (train_X[:, 1] - y_min) / (y_max - y_min) if y_max > y_min else train_X[:, 1]
     d = 2
 
     # Import BoTorch helpers from botorch_random_demo (avoids duplicating model/plot code)
@@ -341,11 +341,11 @@ def run_heatmap(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 5))
-    title = "VLA metric vs (x, z) translation - RMSE: {:.4f}".format(rmse)
-    if origin_x is not None and origin_z is not None:
-        title = "VLA metric vs (x, z) absolute position - RMSE: {:.4f}".format(rmse)
+    title = "VLA metric vs (x, y) translation - RMSE: {:.4f}".format(rmse)
+    if origin_x is not None and origin_y is not None:
+        title = "VLA metric vs (x, y) absolute position - RMSE: {:.4f}".format(rmse)
     elif design_type == "distract":
-        title = "VLA metric vs distractor position (x, z) - RMSE: {:.4f}".format(rmse)
+        title = "VLA metric vs distractor position (x, y) - RMSE: {:.4f}".format(rmse)
     plot_heatmap_fn(
         bounds_dict,
         model,
@@ -356,15 +356,15 @@ def run_heatmap(
         cmap="RdBu_r",
         ax=ax,
     )
-    if origin_x is not None and origin_z is not None:
+    if origin_x is not None and origin_y is not None:
         ax.set_xlabel("x position (m)")
-        ax.set_ylabel("z position (m)")
+        ax.set_ylabel("y position (m)")
     elif design_type == "distract":
         ax.set_xlabel("x position (m)")
-        ax.set_ylabel("z position (m)")
+        ax.set_ylabel("y position (m)")
     else:
         ax.set_xlabel("x translation (m)")
-        ax.set_ylabel("z translation (m)")
+        ax.set_ylabel("y translation (m)")
     plt.savefig(str(out_path), bbox_inches="tight")
     plt.close()
     print(f"[INFO] Saved heatmap to {out_path}")
