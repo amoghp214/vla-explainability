@@ -251,6 +251,7 @@ def run_heatmap(
     origin_x: Optional[float] = None,
     origin_y: Optional[float] = None,
     design_type: str = "move",
+    num_temporal_chunks: int = 1
 ) -> Path:
     """
     Load analysis results and design points, fit BoTorch GP, plot heatmap of metric vs x, y.
@@ -282,7 +283,7 @@ def run_heatmap(
         else:
             x_plot, y_plot = x, y
         X_list.append([x_plot, y_plot])
-        Y_list.append(r["metric"])
+        Y_list.append(r["success_rate"])
 
     # Get results from control perturbation (delta 0,0 -> absolute = origin when origin set)
     assert "control" in results, "Control results not found in analysis results"
@@ -291,7 +292,7 @@ def run_heatmap(
         X_list.append([origin_x + 0.0, origin_y + 0.0])
     else:
         X_list.append([0.0, 0.0])
-    Y_list.append(results["control"]["metric"])
+    Y_list.append(results["control"]["success_rate"])
 
     if len(X_list) < 2:
         raise ValueError(f"Need at least 2 valid design points for heatmap; got {len(X_list)}")
