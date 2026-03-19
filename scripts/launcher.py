@@ -4,12 +4,13 @@ Launcher for the VLA explainability pipeline: random-design + temporal (only wor
 
 Workflow:
   1. Generate unperturbed.bddl, control.bddl, rd_0.bddl .. rd_{n-1}.bddl (n+2 BDDL files).
-     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, y_i) from bounds.
+     Each rd_i.bddl has the object (or distractor) at the sampled (x_i, y_i) on the table plane from bounds;
+     each design point also has a randomly sampled chunk index (when the perturbation occurs).
   2. Generate one YAML per run; each rd_i.yaml points to rd_i.bddl and sets temporal_perturbations
-     at perturbation_start_step/perturbation_stop_step so the move is applied during recording.
+     with start_step/end_step derived from the chunk (chunk c = frames c*frames_per_chunk to (c+1)*frames_per_chunk - 1).
   3. Dispatch SLURM jobs (record.py). Videos are rendered inside record.py.
   4. After jobs complete, run evaluation.
-  5. Fit BO and save heatmap: axes = absolute perturbation position (m), color = VLA metric.
+  5. Fit BO across (x, y, chunk) and save heatmaps per chunk.
 
 Usage:
     python scripts/launcher.py --config configs/vk_main.yaml
@@ -52,7 +53,7 @@ class Launcher:
         self.jobs_dir = rd.jobs_dir
         self.config = rd.config
         self.perturbation_info = []
-        self.design_points: List[dict] = []  # [{id, x, y}, ...]
+        self.design_points: List[dict] = []  # [{id, x, y, chunk}, ...]  (x,y = table plane)
         self.random_design_type: str = "move"  # "move" or "distract"
 
         print(f"[INFO] Run directory: {self.run_dir}")
@@ -151,7 +152,7 @@ class Launcher:
         )
 
     def run_heatmap(self, bounds_x: Tuple[float, float], bounds_y: Tuple[float, float]) -> None:
-        """Build heatmap of VLA metric vs (x, y). For move: uses absolute positions (original + delta). For distract: (x, y) are already absolute."""
+        """Build heatmap of VLA metric vs (x, y, chunk). For move: uses absolute positions (original + delta). For distract: (x, y) are already absolute. x,y = table plane."""
         origin_x, origin_y = None, None
         if self.random_design_type == "move":
             try:
@@ -168,6 +169,10 @@ class Launcher:
                             origin_x, origin_y = float(cx), float(cy)
             except Exception as e:
                 print(f"[WARN] Could not get object origin for absolute-position heatmap: {e}")
+        temporal_cfg = self.config.get("temporal_perturbation") or {}
+        num_temporal_chunks = int(temporal_cfg.get("num_chunks", 1))
+        if num_temporal_chunks < 1:
+            num_temporal_chunks = 1
         run_heatmap(
             run_dir=self.run_dir,
             design_points=self.design_points,
@@ -180,6 +185,7 @@ class Launcher:
             origin_x=origin_x,
             origin_y=origin_y,
             design_type=self.random_design_type,
+            num_temporal_chunks=num_temporal_chunks,
         )
 
     def run_random_design(
@@ -198,12 +204,14 @@ class Launcher:
     ) -> None:
         """Run pipeline: generate (x,y) perturbations from bounds -> dispatch -> evaluate -> heatmap."""
         self.random_design_type = design_type
-        title = "metric vs x, y translation" if design_type == "move" else "metric vs distractor position (x, y)"
+        title = "metric vs (x, y, chunk)" if design_type == "move" else "metric vs distractor position (x, y, chunk)"
+        temporal_cfg = self.config.get("temporal_perturbation") or {}
+        num_chunks = int(temporal_cfg.get("num_chunks", 1))
         print("=" * 80)
         print("VLA Explainability Pipeline (random-design + temporal)")
         print("=" * 80)
         print(f"Run directory: {self.run_dir}")
-        print(f"type={design_type}, n_design={n_design}, bounds_x={bounds_x}, bounds_y={bounds_y}, seed={seed}")
+        print(f"type={design_type}, n_design={n_design}, bounds_x={bounds_x}, bounds_y={bounds_y}, num_chunks={num_chunks}, seed={seed}")
         if design_type == "move":
             print(f"object={object_names}")
         else:

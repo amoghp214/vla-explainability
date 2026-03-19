@@ -161,7 +161,7 @@ run_base_dir: null
 # Random design (temporal + BoTorch heatmap)
 # =============================================================================
 # With --random-design: n+2 BDDL files (unperturbed, control, rd_0..rd_{n-1}). Each rd_i uses
-# its own BDDL and temporal perturbation at perturbation_start_step/perturbation_stop_step.
+# its own BDDL and temporal perturbation in a randomly sampled chunk (start/end step from chunk).
 random_design:
   type: move
   n_design: 120
@@ -171,9 +171,11 @@ random_design:
   object_names: ["akita_black_bowl_1"]
   uniform: true
 
-# When using --random-design: temporal window; perturbation range comes from random_design.bounds_x / bounds_y
-perturbation_start_step: 0
-perturbation_stop_step: 99999
+# Chunk-based temporal: num_chunks divides rollout; each design point samples (x, z, chunk).
+# Frames per chunk = max_rollout_frames // num_chunks (last chunk may have fewer).
+temporal_perturbation:
+  num_chunks: 10
+  # max_rollout_frames: 520   # optional; default from task_suite_name
 
 # =============================================================================
 # Evaluation Configuration

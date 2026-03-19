@@ -25,9 +25,13 @@ random_design:
   object_names: ["akita_black_bowl_1"]
   uniform: true
 
-# --- Temporal window (when perturbation is applied during recording) ---
-perturbation_start_step: 0
-perturbation_stop_step: 99999
+# --- Temporal (chunk-based): when perturbation is applied during recording ---
+# num_chunks divides the rollout into chunks; each design point samples a chunk index.
+# Frames per chunk = max_rollout_frames // num_chunks (last chunk may have fewer).
+# Optional: set max_rollout_frames; if omitted, derived from task_suite_name.
+temporal_perturbation:
+  num_chunks: 10
+  # max_rollout_frames: 520   # optional; default from task_suite (e.g. libero_10 -> 520)
 
 # --- BDDL init box width (m) per object ---
 perturbations:
