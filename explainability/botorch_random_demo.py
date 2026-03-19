@@ -280,11 +280,11 @@ def plot_heatmap(
     ax=None,
 ) -> np.ndarray:
     """Draw heatmap of model posterior mean. model must have .posterior(X)."""
-    bounds = get_bounds_tensor(bounds_dict)
-    x_min, x_max = bounds[0, 0].item(), bounds[1, 0].item()
-    y_min, y_max = bounds[0, 1].item(), bounds[1, 1].item()
-    c_min, c_max = bounds[0, 2].item(), bounds[1, 2].item()
-    lower, upper = bounds[0].numpy(), bounds[1].numpy()
+    x_min, x_max = bounds_dict["x"]
+    y_min, y_max = bounds_dict["y"]
+    c_min, c_max = bounds_dict.get("c", (0, 1))  # default chunk bounds if not provided
+    lower = np.array([x_min, y_min, c_min])
+    upper = np.array([x_max, y_max, c_max])
 
     x_vals = np.arange(x_min, x_max + step * 0.5, step)
     y_vals = np.arange(y_min, y_max + step * 0.5, step)

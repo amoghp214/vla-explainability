@@ -375,7 +375,7 @@ def run_heatmap(
         bounds_x = (float(train_X_np[:, 0].min()), float(train_X_np[:, 0].max()))
     if bounds_y is None:
         bounds_y = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
-    bounds_c = [0, num_temporal_chunks-1]
+    bounds_c = [0, num_temporal_chunks-1 if num_temporal_chunks > 1 else 1]  # prevent divide by 0
     # When using absolute positions, convert passed-in (delta) bounds to absolute; data-derived bounds are already absolute
     if origin_x is not None and origin_y is not None and bounds_x_passed and bounds_y_passed:
         bounds_x = (origin_x + bounds_x[0], origin_x + bounds_x[1])
