@@ -119,6 +119,7 @@ from libero.libero.utils.temporal_perturbations import (
     add_hidden_objects_to_bddl,
     specs_from_config,
     _write_object_pose,      # low-level pose writer used for z_override application
+    _read_object_pose,
 )
 from libero.libero.utils.generate_perturbation_bddl import (
     read_bddl,
@@ -382,10 +383,30 @@ def record_single_demo(
         if temporal_manager is not None:
             prev_active = dict(temporal_manager._active)
             temporal_manager.step(env, step)
+
+            # If perturbation was just applied with no collision, run 10 stabilization
+            # steps and update applied_poses to the settled position so that the
+            # robot-movement check at revert time is against the stabilized pose,
+            # not the immediately-written pose.
             for i, spec in enumerate(temporal_manager.specs):
                 was_active = prev_active.get(i, False)
                 now_active = temporal_manager._active.get(i, False)
                 if not was_active and now_active:
+                    if not temporal_manager.perturbation_collision:
+                        # Run stabilization steps without recording them
+                        for _ in range(10):
+                            env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
+                        # Update applied_poses to post-stabilization position
+                        snap = temporal_manager._snapshots.get(i)
+                        if snap is not None:
+                            sim = temporal_manager._sim
+                            for obj_name in snap.applied_poses:
+                                settled_pose = _read_object_pose(sim, obj_name)
+                                if settled_pose is not None:
+                                    snap.applied_poses[obj_name] = settled_pose
+                                    print(f"[TEMPORAL] Updated applied_pose for '{obj_name}' "
+                                          f"after stabilization → {settled_pose[:3]}")
+
                     perturbation_events.append({
                         "step": step, "event": "start",
                         "type": spec.pert_type,
