@@ -481,7 +481,7 @@ def _resolve_placement(
                 reason = f"placed_in_cavity:{fname}"
                 print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps open cavity "
                       f"'{fname}'. Placing inside at ({cx:.4f}, {cy:.4f}, {final_z:.4f}).")
-                return cx, cy, final_z, reason
+                return cx, cy, final_z, reason, True
 
             fixture_colliders.append(fname)
             top_z = _fixture_z_top(sim, fname)
@@ -493,7 +493,7 @@ def _resolve_placement(
         reason = f"stacked_above_fixture:{','.join(fixture_colliders)}"
         print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps fixture(s) {fixture_colliders} "
               f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
-        return target_x, target_y, final_z, reason
+        return target_x, target_y, final_z, reason, True
 
     # ------------------------------------------------------------------
     # 2. Free-jointed object collision check
@@ -519,12 +519,12 @@ def _resolve_placement(
         reason = f"stacked_above:{','.join(obj_colliders)}"
         print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps object(s) {obj_colliders} "
               f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
-        return target_x, target_y, final_z, reason
+        return target_x, target_y, final_z, reason, True
 
     # ------------------------------------------------------------------
     # 3. No collision
     # ------------------------------------------------------------------
-    return target_x, target_y, original_z, "no_collision"
+    return target_x, target_y, original_z, "no_collision", False
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +675,7 @@ class TemporalPerturbationManager:
         self._active: Dict[int, bool] = {}
         self._log: List[str] = []
         self._sim = None
+        self.perturbation_collision: bool = False
 
     def reset(self, env):
         self._sim = self._get_sim(env)
@@ -756,8 +757,9 @@ class TemporalPerturbationManager:
         target_x = original_pose[0] + dx
         target_y = original_pose[1] + dy
 
-        final_x, final_y, final_z, reason = _resolve_placement(
+        final_x, final_y, final_z, reason, self.perturbation_collision = _resolve_placement(
             sim, spec.obj_name, target_x, target_y, original_pose[2])
+        
 
         ok = _place_object_at_xyz(sim, spec.obj_name, final_x, final_y, final_z)
         if ok:
@@ -800,7 +802,7 @@ class TemporalPerturbationManager:
 
         # Default Z for a newly appearing object is just above the table surface.
         default_z = 0.02
-        final_x, final_y, final_z, reason = _resolve_placement(
+        final_x, final_y, final_z, reason, self.perturbation_collision = _resolve_placement(
             sim, dname, tx, ty, default_z)
 
         ok = _place_object_at_xyz(sim, dname, final_x, final_y, final_z)
@@ -829,7 +831,7 @@ class TemporalPerturbationManager:
         target_x, target_y = original_pose[0], original_pose[1]
         original_z = original_pose[2]
 
-        final_x, final_y, final_z, reason = _resolve_placement(
+        final_x, final_y, final_z, reason, self.perturbation_collision = _resolve_placement(
             sim, spec.replacement_obj_name, target_x, target_y, original_z)
 
         ok = _place_object_at_xyz(sim, spec.replacement_obj_name, final_x, final_y, final_z)
