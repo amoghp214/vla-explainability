@@ -73,16 +73,35 @@ cd $SLURM_SUBMIT_DIR
     for module in slurm_config.get("module_load", []):
         script_content += f"module load {module}\n"
 
+    # Non-interactive bash does not run conda init; `conda activate` is a no-op / wrong
+    # without shell integration, so jobs often fall through to system python.
+    conda_env = slurm_config["conda_env"]
+    conda_init_cmd = slurm_config.get("conda_init_cmd", "").strip()
+    if conda_init_cmd:
+        init_block = conda_init_cmd + "\n"
+    else:
+        init_block = """if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+else
+    echo "ERROR: conda not on PATH after module_load; check slurm.module_load in your config."
+    exit 1
+fi
+"""
+
     script_content += f"""
-conda activate {slurm_config['conda_env']}
+{init_block}
+conda activate {conda_env}
 
 cd {project_root}
 
-if ! python -c "import libero" 2>/dev/null; then
-    echo "Installing libero package..."
-    pip install -e . || {{ echo "ERROR: Failed to install libero package"; exit 1; }}
+# `import libero` is not enough: another env may ship upstream LIBERO without this repo's
+# utils (temporal_perturbations, generate_perturbation_bddl). Match record.py imports.
+if ! python -c 'from libero.libero.utils.temporal_perturbations import TemporalPerturbationManager; from libero.libero.utils.generate_perturbation_bddl import read_bddl' 2>/dev/null; then
+    echo "Installing editable libero from this repo (required for record.py utils)..."
+    # Broken envs may list libero in pip but lack .dist-info (uninstall OSError); --ignore-installed skips that path.
+    pip install -e . || pip install -e . --ignore-installed || {{ echo "ERROR: Failed to install libero package"; exit 1; }}
 else
-    echo "libero package already installed, skipping installation"
+    echo "libero with temporal/generate_perturbation utils OK, skipping pip install -e ."
 fi
 
 python scripts/record.py --config {config_file}
