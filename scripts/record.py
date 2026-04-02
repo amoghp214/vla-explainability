@@ -144,10 +144,17 @@ def _chunk_start_step_to_index(num_chunks: int, max_frames: int) -> Dict[int, in
     return out
 
 
-def _configure_narrow_topdown_camera(env, fovy_deg: float = 8.0, cam_z: float = 9.0) -> bool:
+def _configure_narrow_topdown_camera(
+    env,
+    fovy_deg: float = 3.0,
+    cam_z: float = 22.0,
+    cam_x: float = -0.2,
+    cam_y: float = 0.0,
+) -> bool:
     """
-    Make birdview closer to orthographic: small vertical FOV and higher camera so the
-    table workspace stays in frame with nearly parallel viewing rays.
+    Telephoto top-down: very small FOV (near-parallel rays), high camera, and XY over the
+    table center so the visible footprint is ~table-sized rather than table+full robot+room.
+    Override via config top_down_camera: fovy_deg, camera_z, camera_x, camera_y.
     """
     sim = env.sim
     model = sim.model
@@ -171,8 +178,8 @@ def _configure_narrow_topdown_camera(env, fovy_deg: float = 8.0, cam_z: float = 
         print("[TOP-DOWN] birdview camera not found in MuJoCo model.")
         return False
     model.cam_fovy[cid] = float(fovy_deg)
-    model.cam_pos[cid][0] = 0.0
-    model.cam_pos[cid][1] = 0.0
+    model.cam_pos[cid][0] = float(cam_x)
+    model.cam_pos[cid][1] = float(cam_y)
     model.cam_pos[cid][2] = float(cam_z)
     sim.forward()
     return True
@@ -634,10 +641,17 @@ def record_demo(config: Dict[str, Any]):
 
     if top_down_export is not None:
         td_cam = config.get("top_down_camera") or {}
-        fovy = float(td_cam.get("fovy_deg", 8.0))
-        cam_z = float(td_cam.get("camera_z", 9.0))
-        if _configure_narrow_topdown_camera(env, fovy_deg=fovy, cam_z=cam_z):
-            print(f"[TOP-DOWN] birdview narrowed (fovy={fovy}°, z={cam_z}) for near-parallel rays")
+        fovy = float(td_cam.get("fovy_deg", 3.0))
+        cam_z = float(td_cam.get("camera_z", 22.0))
+        cam_x = float(td_cam.get("camera_x", -0.2))
+        cam_y = float(td_cam.get("camera_y", 0.0))
+        if _configure_narrow_topdown_camera(
+            env, fovy_deg=fovy, cam_z=cam_z, cam_x=cam_x, cam_y=cam_y
+        ):
+            print(
+                f"[TOP-DOWN] birdview (fovy={fovy}°, pos=({cam_x}, {cam_y}, {cam_z})) "
+                "— narrow FOV + high Z ≈ zoom on table"
+            )
 
     # ---- Load model ----
     print("Loading model...")
