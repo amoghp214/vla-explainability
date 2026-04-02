@@ -193,16 +193,72 @@ def _fresh_observations(env):
     return inner._get_observations()
 
 
-def _save_birdview_png(env, path: str) -> None:
-    """Save birdview RGB; same 180° flip as agentview in preprocess_image for consistent orientation."""
-    obs = _fresh_observations(env)
-    if "birdview_image" not in obs:
-        print(f"[TOP-DOWN] WARN: no birdview_image in obs, skip {path}")
-        return
-    img = np.asarray(obs["birdview_image"])[::-1, ::-1]
+def _offscreen_render_context(sim):
+    """Robosuite MjSim stores the GL offscreen context here (see robosuite MujocoEnv._reset_internal)."""
+    return getattr(sim, "_render_context_offscreen", None) or getattr(
+        sim, "render_context_offscreen", None
+    )
+
+
+def _render_birdview_highres(env, width: int, height: int) -> Optional[np.ndarray]:
+    """
+    Render birdview at arbitrary resolution using the same offscreen pipeline as robosuite
+    (does not change policy camera_obs size, which stays 256×256).
+    """
+    inner = env.env
+    sim = inner.sim
+    ctx = _offscreen_render_context(sim)
+    if ctx is None:
+        return None
+    try:
+        cid = sim.model.camera_name2id("birdview")
+    except ValueError:
+        return None
+    try:
+        sim.forward()
+        ctx.render(int(width), int(height), camera_id=cid)
+        rgb = ctx.read_pixels(int(width), int(height), depth=False)
+    except Exception:
+        return None
+    rgb = np.asarray(rgb)
+    # Match LIBERO / observable convention (same as low-res birdview_image save path).
+    return rgb[::-1, ::-1]
+
+
+def _save_birdview_png(
+    env,
+    path: str,
+    export_width: Optional[int] = None,
+    export_height: Optional[int] = None,
+) -> None:
+    """
+    Save birdview RGB. Uses offscreen render at export_width×export_height when larger than
+    policy resolution (256); otherwise uses birdview_image from observations.
+    """
+    w = int(export_width) if export_width else 256
+    h = int(export_height) if export_height else 256
+    w = max(64, min(w, 4096))
+    h = max(64, min(h, 4096))
+
+    img = None
+    if w > 256 or h > 256:
+        img = _render_birdview_highres(env, w, h)
+        if img is None:
+            print(
+                "[TOP-DOWN] WARN: high-res offscreen render unavailable; "
+                "falling back to 256×256 birdview_image."
+            )
+
+    if img is None:
+        obs = _fresh_observations(env)
+        if "birdview_image" not in obs:
+            print(f"[TOP-DOWN] WARN: no birdview_image in obs, skip {path}")
+            return
+        img = np.asarray(obs["birdview_image"])[::-1, ::-1]
+
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     Image.fromarray(img.astype(np.uint8)).save(path)
-    print(f"[TOP-DOWN] Saved {path}")
+    print(f"[TOP-DOWN] Saved {path} ({img.shape[1]}×{img.shape[0]})")
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +553,12 @@ def record_single_demo(
                     top_down_export["dir"],
                     f"demo_{demo_index:03d}_chunk_{chunk_idx:03d}.png",
                 )
-                _save_birdview_png(env, out_name)
+                _save_birdview_png(
+                    env,
+                    out_name,
+                    export_width=top_down_export.get("birdview_width"),
+                    export_height=top_down_export.get("birdview_height"),
+                )
 
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
@@ -619,13 +680,20 @@ def record_demo(config: Dict[str, Any]):
     if pert_id == "unperturbed" and run_dir_s:
         top_down_dir = os.path.join(run_dir_s, "top-down-frames")
         os.makedirs(top_down_dir, exist_ok=True)
+        td_pre = config.get("top_down_camera") or {}
+        bvw = int(td_pre.get("birdview_width", td_pre.get("width", 1024)))
+        bvh = int(td_pre.get("birdview_height", td_pre.get("height", 1024)))
+        bvw = max(64, min(bvw, 4096))
+        bvh = max(64, min(bvh, 4096))
         top_down_export = {
             "dir": top_down_dir,
             "step_to_chunk": _chunk_start_step_to_index(num_chunks_td, max_frames_td),
+            "birdview_width": bvw,
+            "birdview_height": bvh,
         }
         print(
             f"\n[TOP-DOWN] Unperturbed run: saving birdview at chunk starts "
-            f"({num_chunks_td} chunk(s), max_frames={max_frames_td}) → {top_down_dir}"
+            f"({num_chunks_td} chunk(s), max_frames={max_frames_td}, PNG {bvw}×{bvh}) → {top_down_dir}"
         )
 
     # ---- Initialize environment ----

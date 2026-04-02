@@ -71,6 +71,9 @@ def create_record_config(
     # Chunk boundaries for top-down frames / heatmap (num_chunks, max_rollout_frames)
     if config.get("temporal_perturbation") is not None:
         record_config["temporal_perturbation"] = config["temporal_perturbation"]
+    # Unperturbed top-down PNGs (record.py): resolution, FOV, camera pose — see configs/vk_main.yaml
+    if config.get("top_down_camera") is not None:
+        record_config["top_down_camera"] = config["top_down_camera"]
     return record_config
 
 

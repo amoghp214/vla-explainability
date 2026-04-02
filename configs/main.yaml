@@ -177,6 +177,16 @@ temporal_perturbation:
   num_chunks: 10
   # max_rollout_frames: 520   # optional; default from task_suite_name
 
+# Top-down birdview PNGs (unperturbed run only): <run_dir>/top-down-frames/
+# Policy stays 256×256; birdview_width/height use offscreen render for exports only.
+top_down_camera:
+  birdview_width: 1024
+  birdview_height: 1024
+  fovy_deg: 3.0
+  camera_z: 22.0
+  camera_x: -0.2
+  camera_y: 0.0
+
 # =============================================================================
 # Evaluation Configuration
 # =============================================================================
