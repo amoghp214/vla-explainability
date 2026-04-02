@@ -422,7 +422,6 @@ def record_single_demo(
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
         frames.append(np.array(img))
-        img.save(f"/home/hice1/apalasamudram6/scratch/vla-explainability/scripts/record_last_step.png")
         prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
         inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
         action = vla.predict_action(**inputs, unnorm_key=config["task_suite_name"], do_sample=False)
