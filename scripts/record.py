@@ -149,18 +149,24 @@ def _configure_narrow_topdown_camera(env, fovy_deg: float = 8.0, cam_z: float = 
     Make birdview closer to orthographic: small vertical FOV and higher camera so the
     table workspace stays in frame with nearly parallel viewing rays.
     """
-    try:
-        import mujoco
-    except ImportError:
-        print("[TOP-DOWN] mujoco not available; skipping birdview FOV/position tweak.")
-        return False
     sim = env.sim
     model = sim.model
-    try:
-        cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "birdview")
-    except (AttributeError, ValueError, TypeError) as e:
-        print(f"[TOP-DOWN] Could not resolve birdview camera id: {e}")
-        return False
+    cid = -1
+    cam_fn = getattr(model, "camera_name2id", None)
+    if callable(cam_fn):
+        try:
+            cid = cam_fn("birdview")
+        except ValueError as e:
+            print(f"[TOP-DOWN] birdview camera: {e}")
+            return False
+    if cid < 0:
+        try:
+            import mujoco
+            raw = getattr(model, "_model", model)
+            cid = mujoco.mj_name2id(raw, int(mujoco.mjtObj.mjOBJ_CAMERA), "birdview")
+        except Exception as e:
+            print(f"[TOP-DOWN] Could not resolve birdview camera id: {e}")
+            return False
     if cid < 0:
         print("[TOP-DOWN] birdview camera not found in MuJoCo model.")
         return False
