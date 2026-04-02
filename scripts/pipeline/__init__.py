@@ -1,6 +1,6 @@
 """
 Pipeline modules for VLA explainability: run directory, perturbations, configs, SLURM,
-config-driven generation, rendering, evaluation.
+config-driven generation, evaluation, and optional HDF5 playback rendering (render_videos).
 
 Used by both the config-driven launcher and the Bayesian Optimization pipeline.
 """

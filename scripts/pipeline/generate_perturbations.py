@@ -3,7 +3,7 @@ Config-driven perturbation generation: build list of (unperturbed + perturbed) B
 
 Reads main config, generates unperturbed BDDL + record config, then BDDL spatial
 and/or language perturbations, writing all BDDL and YAML files. Returns
-perturbation_info list for use by launcher (manifest, dispatch, render, evaluation).
+perturbation_info list for use by launcher (manifest, dispatch, evaluation).
 """
 
 import copy

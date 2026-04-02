@@ -55,6 +55,8 @@ def create_record_config(
         "action_scale": config.get("action_scale", 1.0),
         "num_demos": config.get("num_demos", 1),
         "noise_std": config.get("noise_std", 0.0),
+        "perturbation_id": perturbation_id,
+        "run_dir": str(results_dir.resolve().parent),
     }
     # Always forward temporal (mid-rollout) perturbation config so all launcher paths use it.
     # Use first frame (start_step: 0) for full-rollout; use large end_step (e.g. 99999) for "until episode end".
@@ -66,6 +68,9 @@ def create_record_config(
     record_config["hidden_objects"] = config.get("hidden_objects", [])
     if config.get("target_workspace") is not None:
         record_config["target_workspace"] = config["target_workspace"]
+    # Chunk boundaries for top-down frames / heatmap (num_chunks, max_rollout_frames)
+    if config.get("temporal_perturbation") is not None:
+        record_config["temporal_perturbation"] = config["temporal_perturbation"]
     return record_config
 
 

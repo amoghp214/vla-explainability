@@ -199,7 +199,4 @@ evaluation:
     - json
     - hdf5
 
-# =============================================================================
-# Video Rendering Configuration
-# =============================================================================
-render_videos: false
+# Videos: record.py writes MP4s to record_path in each generated record YAML (no separate playback step).

@@ -64,8 +64,7 @@ slurm:
 
 run_base_dir: null
 
-# Videos are rendered inside record.py; skip separate playback/render step.
-render_videos: false
+# MP4s are written by record.py to each YAML's record_path (results/videos/<id>.mp4).
 
 # --- Evaluation (for heatmap) ---
 evaluation:

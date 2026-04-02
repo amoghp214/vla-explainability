@@ -8,7 +8,7 @@ Workflow:
      each design point also has a randomly sampled chunk index (when the perturbation occurs).
   2. Generate one YAML per run; each rd_i.yaml points to rd_i.bddl and sets temporal_perturbations
      with start_step/end_step derived from the chunk (chunk c = frames c*frames_per_chunk to (c+1)*frames_per_chunk - 1).
-  3. Dispatch SLURM jobs (record.py). Videos are rendered inside record.py.
+  3. Dispatch SLURM jobs (record.py writes HDF5 and MP4s per config record_path).
   4. After jobs complete, run evaluation.
   5. Fit BO across (x, y, chunk) and save heatmaps per chunk.
 
@@ -30,7 +30,6 @@ from scripts.pipeline.run_dir import create_run_dir, PROJECT_ROOT
 from scripts.pipeline.configs import create_record_config as pipeline_create_record_config
 from scripts.pipeline.slurm import dispatch_batch
 from scripts.pipeline.generate_perturbations import save_perturbation_manifest
-from scripts.pipeline.render import render_videos
 from scripts.pipeline.evaluation import run_evaluation
 from scripts.pipeline.perturbation import read_bddl, get_object_centers_from_bddl
 from scripts.pipeline.random_design import (
@@ -40,7 +39,7 @@ from scripts.pipeline.random_design import (
 
 
 class Launcher:
-    """Orchestrator for the random-design + temporal pipeline: run_dir, generate BDDL+YAML, dispatch, render, evaluate, heatmap."""
+    """Orchestrator for the random-design + temporal pipeline: run_dir, generate BDDL+YAML, dispatch, evaluate, heatmap."""
 
     def __init__(self, config_path: str, run_dir_override: Optional[str] = None):
         self.config_path = Path(config_path)
@@ -131,15 +130,6 @@ class Launcher:
         print(f"  Failed: {len(failed)}")
         with open(self.run_dir / "job_summary.json", "w") as f:
             json.dump({"completed": completed, "failed": failed, "total": len(self.perturbation_info)}, f, indent=2)
-
-    def render_videos(self) -> None:
-        """Render videos via pipeline."""
-        render_videos(
-            self.perturbation_info,
-            self.results_dir,
-            self.config_dir,
-            project_root=PROJECT_ROOT,
-        )
 
     def run_evaluation(self) -> None:
         """Run evaluation via pipeline."""
@@ -233,8 +223,6 @@ class Launcher:
             self._print_random_design_instructions()
             return
         self.dispatch_jobs()
-        if self.config.get("render_videos", True):
-            self.render_videos()
         eval_config = self.config.get("evaluation", {})
         if not eval_config.get("enabled", False):
             print("[INFO] Evaluation was disabled in config; enabling for random-design heatmap.")

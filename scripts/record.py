@@ -128,6 +128,69 @@ from libero.libero.utils.generate_perturbation_bddl import (
     resolve_z_overrides,     # converts sentinel/estimated entries to sim-accurate (cx,cy,z)
 )
 
+from pipeline.random_design import chunk_to_start_end_step, get_max_rollout_frames
+
+
+# ---------------------------------------------------------------------------
+# Top-down (birdview) export for unperturbed heatmap alignment
+# ---------------------------------------------------------------------------
+
+def _chunk_start_step_to_index(num_chunks: int, max_frames: int) -> Dict[int, int]:
+    """Map rollout step at chunk start -> chunk index (0 .. num_chunks-1)."""
+    out: Dict[int, int] = {}
+    for c in range(num_chunks):
+        start_step, _ = chunk_to_start_end_step(c, num_chunks, max_frames)
+        out[int(start_step)] = c
+    return out
+
+
+def _configure_narrow_topdown_camera(env, fovy_deg: float = 8.0, cam_z: float = 9.0) -> bool:
+    """
+    Make birdview closer to orthographic: small vertical FOV and higher camera so the
+    table workspace stays in frame with nearly parallel viewing rays.
+    """
+    try:
+        import mujoco
+    except ImportError:
+        print("[TOP-DOWN] mujoco not available; skipping birdview FOV/position tweak.")
+        return False
+    sim = env.sim
+    model = sim.model
+    try:
+        cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "birdview")
+    except (AttributeError, ValueError, TypeError) as e:
+        print(f"[TOP-DOWN] Could not resolve birdview camera id: {e}")
+        return False
+    if cid < 0:
+        print("[TOP-DOWN] birdview camera not found in MuJoCo model.")
+        return False
+    model.cam_fovy[cid] = float(fovy_deg)
+    model.cam_pos[cid][0] = 0.0
+    model.cam_pos[cid][1] = 0.0
+    model.cam_pos[cid][2] = float(cam_z)
+    sim.forward()
+    return True
+
+
+def _fresh_observations(env):
+    """Re-render observations from the current sim state (e.g. after extra env.step calls)."""
+    inner = env.env
+    inner.sim.forward()
+    inner._update_observables(force=True)
+    return inner._get_observations()
+
+
+def _save_birdview_png(env, path: str) -> None:
+    """Save birdview RGB; same 180° flip as agentview in preprocess_image for consistent orientation."""
+    obs = _fresh_observations(env)
+    if "birdview_image" not in obs:
+        print(f"[TOP-DOWN] WARN: no birdview_image in obs, skip {path}")
+        return
+    img = np.asarray(obs["birdview_image"])[::-1, ::-1]
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    Image.fromarray(img.astype(np.uint8)).save(path)
+    print(f"[TOP-DOWN] Saved {path}")
+
 
 # ---------------------------------------------------------------------------
 # Image preprocessing
@@ -329,6 +392,7 @@ def record_single_demo(
     demo_index: int,
     seed: int,
     temporal_manager: Optional[TemporalPerturbationManager] = None,
+    top_down_export: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Record a single demonstration, applying temporal perturbations if provided.
@@ -358,14 +422,7 @@ def record_single_demo(
     for _ in range(10):
         obs, _, _, _ = env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
 
-    max_steps_dict = {
-        "libero_spatial": 220,
-        "libero_object": 280,
-        "libero_goal": 300,
-        "libero_10": 520,
-        "libero_90": 400,
-    }
-    max_steps = max_steps_dict.get(config["task_suite_name"], 200)
+    max_steps = get_max_rollout_frames(config)
     action_scale = config.get("action_scale", 1.0)
     noise_std = config.get("noise_std", 0.0)
 
@@ -419,10 +476,19 @@ def record_single_demo(
                         "obj": spec.obj_name or spec.distractor_obj_name,
                     })
 
+        if top_down_export:
+            stc = top_down_export.get("step_to_chunk") or {}
+            if step in stc:
+                chunk_idx = stc[step]
+                out_name = os.path.join(
+                    top_down_export["dir"],
+                    f"demo_{demo_index:03d}_chunk_{chunk_idx:03d}.png",
+                )
+                _save_birdview_png(env, out_name)
+
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
         frames.append(np.array(img))
-        img.save(f"/home/hice1/apalasamudram6/scratch/vla-explainability/scripts/record_last_step.png")
         prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
         inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
         action = vla.predict_action(**inputs, unnorm_key=config["task_suite_name"], do_sample=False)
@@ -524,14 +590,48 @@ def record_demo(config: Dict[str, Any]):
     else:
         print("\n[TEMPORAL] No temporal perturbations configured.")
 
+    pert_id = config.get("perturbation_id", "")
+    run_dir_s = config.get("run_dir")
+    if not run_dir_s and config.get("out_file"):
+        run_dir_s = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(config["out_file"])), "..")
+        )
+    temporal_cfg = config.get("temporal_perturbation") or {}
+    num_chunks_td = int(temporal_cfg.get("num_chunks", 1))
+    if num_chunks_td < 1:
+        num_chunks_td = 1
+    max_frames_td = get_max_rollout_frames(config)
+
+    top_down_export: Optional[Dict[str, Any]] = None
+    if pert_id == "unperturbed" and run_dir_s:
+        top_down_dir = os.path.join(run_dir_s, "top-down-frames")
+        os.makedirs(top_down_dir, exist_ok=True)
+        top_down_export = {
+            "dir": top_down_dir,
+            "step_to_chunk": _chunk_start_step_to_index(num_chunks_td, max_frames_td),
+        }
+        print(
+            f"\n[TOP-DOWN] Unperturbed run: saving birdview at chunk starts "
+            f"({num_chunks_td} chunk(s), max_frames={max_frames_td}) → {top_down_dir}"
+        )
+
     # ---- Initialize environment ----
     env_args = {
         "bddl_file_name": bddl_file,
         "camera_heights": 256,
         "camera_widths": 256,
     }
+    if top_down_export is not None:
+        env_args["camera_names"] = ["agentview", "birdview"]
     print("\nInitializing environment...")
     env = OffScreenRenderEnv(**env_args)
+
+    if top_down_export is not None:
+        td_cam = config.get("top_down_camera") or {}
+        fovy = float(td_cam.get("fovy_deg", 8.0))
+        cam_z = float(td_cam.get("camera_z", 9.0))
+        if _configure_narrow_topdown_camera(env, fovy_deg=fovy, cam_z=cam_z):
+            print(f"[TOP-DOWN] birdview narrowed (fovy={fovy}°, z={cam_z}) for near-parallel rays")
 
     # ---- Load model ----
     print("Loading model...")
@@ -557,6 +657,7 @@ def record_demo(config: Dict[str, Any]):
             demo_index=demo_idx,
             seed=seed,
             temporal_manager=temporal_manager,
+            top_down_export=top_down_export,
         )
         all_demos.append(demo_data)
 
@@ -591,18 +692,25 @@ def record_demo(config: Dict[str, Any]):
 
     print(f"✓ Saved {num_demos} demo(s) to {out_file}")
 
-    # ---- Save videos ----
-    record_path = config["record_path"]
-    video_dir = os.path.dirname(record_path)
-    video_base = "video"
+    # ---- Save videos (paths match create_record_config: results/videos/<perturbation_id>.mp4) ----
+    record_path = config.get("record_path")
+    if record_path:
+        record_path = os.path.normpath(os.path.abspath(record_path))
+        video_dir = os.path.dirname(record_path)
+        os.makedirs(video_dir, exist_ok=True)
+        stem, ext = os.path.splitext(os.path.basename(record_path))
+        if not ext:
+            ext = ".mp4"
 
-    print(f"\nSaving {num_demos} video(s)...")
-    for demo_idx, demo_data in enumerate(all_demos):
-        if num_demos == 1:
-            video_path = os.path.join(video_dir, f"{video_base}.mp4")
-        else:
-            video_path = os.path.join(video_dir, f"{video_base}_demo_{demo_idx}.mp4")
-        save_demo_video(demo_data["frames"], video_path, fps=20)
+        print(f"\nSaving {num_demos} video(s)...")
+        for demo_idx, demo_data in enumerate(all_demos):
+            if num_demos == 1:
+                video_path = record_path
+            else:
+                video_path = os.path.join(video_dir, f"{stem}_demo_{demo_idx}{ext}")
+            save_demo_video(demo_data["frames"], video_path, fps=20)
+    else:
+        print("\n⚠ No record_path in config; skipping video export.")
 
     print("\n✓ Recording and video export complete!")
 
