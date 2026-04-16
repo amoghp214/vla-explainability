@@ -34,14 +34,18 @@ temporal_perturbation:
   # max_rollout_frames: 520   # optional; default from task_suite (e.g. libero_10 -> 520)
 
 # Top-down birdview PNGs (unperturbed run only): saved under <run_dir>/top-down-frames/
-# Policy cameras stay 256×256; these sizes use an extra offscreen render for exports only.
+# Policy cameras stay 256×256; exports use offscreen render + matplotlib axes (world x,y in meters).
 top_down_camera:
   birdview_width: 1024
   birdview_height: 1024
-  fovy_deg: 3.0
-  camera_z: 22.0
-  camera_x: -0.2
+  fovy_deg: 1.0
+  camera_z: 58.0
+  camera_x: 0.0
   camera_y: 0.0
+  # World XY extent vs table plane (m). Omit to auto-estimate from *table* geoms.
+  # table_plane_z: 0.85
+  plot_distance_axes: true
+  figure_dpi: 120
 
 # --- BDDL init box width (m) per object ---
 perturbations:

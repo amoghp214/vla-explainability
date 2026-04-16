@@ -78,7 +78,7 @@ import tempfile
 import numpy as np
 import cv2
 from PIL import Image
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
@@ -237,15 +237,96 @@ def _render_birdview_highres(env, width: int, height: int) -> Optional[np.ndarra
     return rgb[::-1, ::-1]
 
 
+def _estimate_table_surface_z(sim) -> float:
+    """Approximate world z of tabletop from geoms named like *table* (m)."""
+    sim.forward()
+    z_best = 0.78
+    model, data = sim.model, sim.data
+    for gid in range(model.ngeom):
+        try:
+            nm = model.geom_id2name(gid)
+        except Exception:
+            continue
+        if not nm or "table" not in nm.lower():
+            continue
+        try:
+            hz = float(np.asarray(model.geom_size[gid])[2])
+        except Exception:
+            hz = float(np.max(np.asarray(model.geom_size[gid])))
+        ztop = float(data.geom_xpos[gid, 2]) + hz
+        if ztop > z_best:
+            z_best = ztop
+    return z_best
+
+
+def _birdview_world_xy_extent_m(
+    env,
+    cam_name: str,
+    w: int,
+    h: int,
+    z_table: float,
+) -> Optional[Tuple[float, float, float, float]]:
+    """
+    Map image edges to world XY on plane z=z_table (meters) using pinhole + cam pose.
+    Returns (x_left, x_right, y_bottom, y_top) for matplotlib imshow(..., origin='upper').
+    """
+    inner = env.env
+    sim = inner.sim
+    try:
+        cid = sim.model.camera_name2id(cam_name)
+    except ValueError:
+        return None
+    sim.forward()
+    C = np.asarray(sim.data.cam_xpos[cid], dtype=np.float64).reshape(3)
+    R = np.asarray(sim.data.cam_xmat[cid], dtype=np.float64).reshape(3, 3)
+    fovy_deg = float(np.asarray(sim.model.cam_fovy[cid]))
+    fovy_rad = np.deg2rad(fovy_deg)
+    tan_half_y = float(np.tan(fovy_rad * 0.5))
+    tan_half_x = tan_half_y * (float(w) / float(h))
+
+    def _world_xy_pixel(u: float, v: float) -> Optional[Tuple[float, float]]:
+        # Pixel center (u,v); OpenGL-style NDC: sx left=-1, sy top=+1
+        sx = (u + 0.5) / float(w) * 2.0 - 1.0
+        sy = 1.0 - (v + 0.5) / float(h) * 2.0
+        d_cam = np.array([sx * tan_half_x, sy * tan_half_y, -1.0], dtype=np.float64)
+        d_world = R @ d_cam
+        if abs(d_world[2]) < 1e-12:
+            return None
+        t = (z_table - C[2]) / d_world[2]
+        if t <= 0.0:
+            return None
+        p = C + t * d_world
+        return float(p[0]), float(p[1])
+
+    def _mean_axis(samples: List[Optional[Tuple[float, float]]], idx: int) -> Optional[float]:
+        vals = [s[idx] for s in samples if s is not None]
+        return float(np.mean(vals)) if vals else None
+
+    # Top / bottom image rows → world y (for origin='upper', extent top = row 0).
+    y_top = _mean_axis([_world_xy_pixel(u, 0.5) for u in np.linspace(0.5, w - 0.5, 7)], 1)
+    y_bot = _mean_axis([_world_xy_pixel(u, h - 0.5) for u in np.linspace(0.5, w - 0.5, 7)], 1)
+    x_left = _mean_axis([_world_xy_pixel(0.5, v) for v in np.linspace(0.5, h - 0.5, 7)], 0)
+    x_right = _mean_axis([_world_xy_pixel(w - 0.5, v) for v in np.linspace(0.5, h - 0.5, 7)], 0)
+    if y_top is None or y_bot is None or x_left is None or x_right is None:
+        return None
+    xl, xr = (x_left, x_right) if x_left < x_right else (x_right, x_left)
+    yb, yt = (y_bot, y_top) if y_bot < y_top else (y_top, y_bot)
+    return xl, xr, yb, yt
+
+
 def _save_birdview_png(
     env,
     path: str,
     export_width: Optional[int] = None,
     export_height: Optional[int] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Save birdview RGB. Uses offscreen render at export_width×export_height when larger than
     policy resolution (256); otherwise uses birdview_image from observations.
+
+    If config.top_down_camera.plot_distance_axes is true (default), also saves with matplotlib
+    axes labeled in meters (world XY on the table plane z).
     """
     w = int(export_width) if export_width else 256
     h = int(export_height) if export_height else 256
@@ -269,6 +350,52 @@ def _save_birdview_png(
         img = np.asarray(obs["birdview_image"])[::-1, ::-1]
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    td = (config or {}).get("top_down_camera") or {}
+    plot_axes = bool(td.get("plot_distance_axes", True))
+    inner = env.env
+    sim = inner.sim
+
+    if plot_axes:
+        z_table = td.get("table_plane_z")
+        if z_table is not None:
+            z_plane = float(z_table)
+        else:
+            z_plane = _estimate_table_surface_z(sim)
+        extent = _birdview_world_xy_extent_m(env, "birdview", w, h, z_plane)
+        if extent is not None:
+            x0, x1, yb, yt = extent
+            if abs(x1 - x0) >= 1e-5 and abs(yt - yb) >= 1e-5:
+                try:
+                    import matplotlib
+
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+
+                    dpi = int(td.get("figure_dpi", 120))
+                    dpi = max(72, min(dpi, 300))
+                    fig_w = max(4.0, w / float(dpi))
+                    fig_h = max(4.0, h / float(dpi))
+                    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+                    ax.imshow(
+                        img.astype(np.uint8),
+                        extent=(x0, x1, yb, yt),
+                        origin="upper",
+                        interpolation="nearest",
+                    )
+                    ax.set_xlabel("x (m)")
+                    ax.set_ylabel("y (m)")
+                    ax.set_aspect("equal")
+                    ax.set_title(f"Birdview (table plane z ≈ {z_plane:.2f} m)")
+                    fig.savefig(path, bbox_inches="tight", pad_inches=0.15, dpi=dpi)
+                    plt.close(fig)
+                    print(
+                        f"[TOP-DOWN] Saved {path} ({img.shape[1]}x{img.shape[0]} with axes, "
+                        f"x=[{x0:.3f},{x1:.3f}] y=[{yb:.3f},{yt:.3f}] m)"
+                    )
+                    return
+                except Exception as ex:
+                    print(f"[TOP-DOWN] WARN: matplotlib axes save failed ({ex}); saving raw PNG.")
+
     Image.fromarray(img.astype(np.uint8)).save(path)
     print(f"[TOP-DOWN] Saved {path} ({img.shape[1]}×{img.shape[0]})")
 
@@ -581,6 +708,7 @@ def record_single_demo(
                     out_name,
                     export_width=top_down_export.get("birdview_width"),
                     export_height=top_down_export.get("birdview_height"),
+                    config=config,
                 )
 
         # ---- Policy inference ----
