@@ -284,11 +284,11 @@ def _birdview_world_xy_extent_m(
     tan_half_y = float(np.tan(fovy_rad * 0.5))
     tan_half_x = tan_half_y * (float(w) / float(h))
 
-    def _world_xy_pixel(u: float, v: float) -> Optional[Tuple[float, float]]:
+    def _world_xy_pixel(u: float, v: float, forward_sign: float) -> Optional[Tuple[float, float]]:
         # Pixel center (u,v); OpenGL-style NDC: sx left=-1, sy top=+1
         sx = (u + 0.5) / float(w) * 2.0 - 1.0
         sy = 1.0 - (v + 0.5) / float(h) * 2.0
-        d_cam = np.array([sx * tan_half_x, sy * tan_half_y, -1.0], dtype=np.float64)
+        d_cam = np.array([sx * tan_half_x, sy * tan_half_y, forward_sign], dtype=np.float64)
         d_world = R @ d_cam
         if abs(d_world[2]) < 1e-12:
             return None
@@ -302,16 +302,28 @@ def _birdview_world_xy_extent_m(
         vals = [s[idx] for s in samples if s is not None]
         return float(np.mean(vals)) if vals else None
 
-    # Top / bottom image rows → world y (for origin='upper', extent top = row 0).
-    y_top = _mean_axis([_world_xy_pixel(u, 0.5) for u in np.linspace(0.5, w - 0.5, 7)], 1)
-    y_bot = _mean_axis([_world_xy_pixel(u, h - 0.5) for u in np.linspace(0.5, w - 0.5, 7)], 1)
-    x_left = _mean_axis([_world_xy_pixel(0.5, v) for v in np.linspace(0.5, h - 0.5, 7)], 0)
-    x_right = _mean_axis([_world_xy_pixel(w - 0.5, v) for v in np.linspace(0.5, h - 0.5, 7)], 0)
-    if y_top is None or y_bot is None or x_left is None or x_right is None:
-        return None
-    xl, xr = (x_left, x_right) if x_left < x_right else (x_right, x_left)
-    yb, yt = (y_bot, y_top) if y_bot < y_top else (y_top, y_bot)
-    return xl, xr, yb, yt
+    # Try both camera forward conventions (+Z / -Z in camera frame) and keep the valid one.
+    for forward_sign in (-1.0, 1.0):
+        # Top / bottom image rows → world y (for origin='upper', extent top = row 0).
+        y_top = _mean_axis(
+            [_world_xy_pixel(u, 0.5, forward_sign) for u in np.linspace(0.5, w - 0.5, 7)], 1
+        )
+        y_bot = _mean_axis(
+            [_world_xy_pixel(u, h - 0.5, forward_sign) for u in np.linspace(0.5, w - 0.5, 7)], 1
+        )
+        x_left = _mean_axis(
+            [_world_xy_pixel(0.5, v, forward_sign) for v in np.linspace(0.5, h - 0.5, 7)], 0
+        )
+        x_right = _mean_axis(
+            [_world_xy_pixel(w - 0.5, v, forward_sign) for v in np.linspace(0.5, h - 0.5, 7)], 0
+        )
+        if y_top is None or y_bot is None or x_left is None or x_right is None:
+            continue
+        xl, xr = (x_left, x_right) if x_left < x_right else (x_right, x_left)
+        yb, yt = (y_bot, y_top) if y_bot < y_top else (y_top, y_bot)
+        if abs(xr - xl) >= 1e-5 and abs(yt - yb) >= 1e-5:
+            return xl, xr, yb, yt
+    return None
 
 
 def _save_birdview_png(
@@ -362,39 +374,43 @@ def _save_birdview_png(
         else:
             z_plane = _estimate_table_surface_z(sim)
         extent = _birdview_world_xy_extent_m(env, "birdview", w, h, z_plane)
-        if extent is not None:
+        if extent is None:
+            print(
+                "[TOP-DOWN] WARN: could not compute world-meter extent for birdview; "
+                "saving raw PNG without axes."
+            )
+        else:
             x0, x1, yb, yt = extent
-            if abs(x1 - x0) >= 1e-5 and abs(yt - yb) >= 1e-5:
-                try:
-                    import matplotlib
+            try:
+                import matplotlib
 
-                    matplotlib.use("Agg")
-                    import matplotlib.pyplot as plt
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
 
-                    dpi = int(td.get("figure_dpi", 120))
-                    dpi = max(72, min(dpi, 300))
-                    fig_w = max(4.0, w / float(dpi))
-                    fig_h = max(4.0, h / float(dpi))
-                    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
-                    ax.imshow(
-                        img.astype(np.uint8),
-                        extent=(x0, x1, yb, yt),
-                        origin="upper",
-                        interpolation="nearest",
-                    )
-                    ax.set_xlabel("x (m)")
-                    ax.set_ylabel("y (m)")
-                    ax.set_aspect("equal")
-                    ax.set_title(f"Birdview (table plane z ≈ {z_plane:.2f} m)")
-                    fig.savefig(path, bbox_inches="tight", pad_inches=0.15, dpi=dpi)
-                    plt.close(fig)
-                    print(
-                        f"[TOP-DOWN] Saved {path} ({img.shape[1]}x{img.shape[0]} with axes, "
-                        f"x=[{x0:.3f},{x1:.3f}] y=[{yb:.3f},{yt:.3f}] m)"
-                    )
-                    return
-                except Exception as ex:
-                    print(f"[TOP-DOWN] WARN: matplotlib axes save failed ({ex}); saving raw PNG.")
+                dpi = int(td.get("figure_dpi", 120))
+                dpi = max(72, min(dpi, 300))
+                fig_w = max(4.0, w / float(dpi))
+                fig_h = max(4.0, h / float(dpi))
+                fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+                ax.imshow(
+                    img.astype(np.uint8),
+                    extent=(x0, x1, yb, yt),
+                    origin="upper",
+                    interpolation="nearest",
+                )
+                ax.set_xlabel("x (m)")
+                ax.set_ylabel("y (m)")
+                ax.set_aspect("equal")
+                ax.set_title(f"Birdview (table plane z ≈ {z_plane:.2f} m)")
+                fig.savefig(path, bbox_inches="tight", pad_inches=0.15, dpi=dpi)
+                plt.close(fig)
+                print(
+                    f"[TOP-DOWN] Saved {path} ({img.shape[1]}x{img.shape[0]} with axes, "
+                    f"x=[{x0:.3f},{x1:.3f}] y=[{yb:.3f},{yt:.3f}] m)"
+                )
+                return
+            except Exception as ex:
+                print(f"[TOP-DOWN] WARN: matplotlib axes save failed ({ex}); saving raw PNG.")
 
     Image.fromarray(img.astype(np.uint8)).save(path)
     print(f"[TOP-DOWN] Saved {path} ({img.shape[1]}×{img.shape[0]})")
