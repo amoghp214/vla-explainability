@@ -285,12 +285,14 @@ def _birdview_world_xy_extent_m(
     tan_half_y = float(np.tan(fovy_rad * 0.5))
     tan_half_x = tan_half_y * (float(w) / float(h))
 
-    def _world_xy_pixel(u: float, v: float, forward_sign: float) -> Optional[Tuple[float, float]]:
+    def _world_xy_pixel(
+        u: float, v: float, forward_sign: float, use_transpose: bool
+    ) -> Optional[Tuple[float, float]]:
         # Pixel center (u,v); OpenGL-style NDC: sx left=-1, sy top=+1
         sx = (u + 0.5) / float(w) * 2.0 - 1.0
         sy = 1.0 - (v + 0.5) / float(h) * 2.0
         d_cam = np.array([sx * tan_half_x, sy * tan_half_y, forward_sign], dtype=np.float64)
-        d_world = R @ d_cam
+        d_world = (R.T @ d_cam) if use_transpose else (R @ d_cam)
         if abs(d_world[2]) < 1e-12:
             return None
         t = (z_table - C[2]) / d_world[2]
@@ -305,37 +307,53 @@ def _birdview_world_xy_extent_m(
 
     # Try both camera forward conventions (+Z / -Z in camera frame) and keep the valid one.
     fail_reasons: List[str] = []
-    for forward_sign in (-1.0, 1.0):
-        valid_counts = {"top": 0, "bot": 0, "left": 0, "right": 0}
-        # Top / bottom image rows → world y (for origin='upper', extent top = row 0).
-        samples_top = [_world_xy_pixel(u, 0.5, forward_sign) for u in np.linspace(0.5, w - 0.5, 7)]
-        samples_bot = [_world_xy_pixel(u, h - 0.5, forward_sign) for u in np.linspace(0.5, w - 0.5, 7)]
-        samples_left = [_world_xy_pixel(0.5, v, forward_sign) for v in np.linspace(0.5, h - 0.5, 7)]
-        samples_right = [_world_xy_pixel(w - 0.5, v, forward_sign) for v in np.linspace(0.5, h - 0.5, 7)]
-        valid_counts["top"] = sum(s is not None for s in samples_top)
-        valid_counts["bot"] = sum(s is not None for s in samples_bot)
-        valid_counts["left"] = sum(s is not None for s in samples_left)
-        valid_counts["right"] = sum(s is not None for s in samples_right)
+    # Try both camera-frame conventions and both forward signs; different MuJoCo wrappers
+    # can expose cam_xmat with opposite multiplication expectations.
+    for use_transpose in (False, True):
+        mat_mode = "R.T@v" if use_transpose else "R@v"
+        for forward_sign in (-1.0, 1.0):
+            valid_counts = {"top": 0, "bot": 0, "left": 0, "right": 0}
+            # Top / bottom image rows → world y (for origin='upper', extent top = row 0).
+            samples_top = [
+                _world_xy_pixel(u, 0.5, forward_sign, use_transpose)
+                for u in np.linspace(0.5, w - 0.5, 7)
+            ]
+            samples_bot = [
+                _world_xy_pixel(u, h - 0.5, forward_sign, use_transpose)
+                for u in np.linspace(0.5, w - 0.5, 7)
+            ]
+            samples_left = [
+                _world_xy_pixel(0.5, v, forward_sign, use_transpose)
+                for v in np.linspace(0.5, h - 0.5, 7)
+            ]
+            samples_right = [
+                _world_xy_pixel(w - 0.5, v, forward_sign, use_transpose)
+                for v in np.linspace(0.5, h - 0.5, 7)
+            ]
+            valid_counts["top"] = sum(s is not None for s in samples_top)
+            valid_counts["bot"] = sum(s is not None for s in samples_bot)
+            valid_counts["left"] = sum(s is not None for s in samples_left)
+            valid_counts["right"] = sum(s is not None for s in samples_right)
 
-        y_top = _mean_axis(samples_top, 1)
-        y_bot = _mean_axis(samples_bot, 1)
-        x_left = _mean_axis(samples_left, 0)
-        x_right = _mean_axis(samples_right, 0)
-        if y_top is None or y_bot is None or x_left is None or x_right is None:
+            y_top = _mean_axis(samples_top, 1)
+            y_bot = _mean_axis(samples_bot, 1)
+            x_left = _mean_axis(samples_left, 0)
+            x_right = _mean_axis(samples_right, 0)
+            if y_top is None or y_bot is None or x_left is None or x_right is None:
+                fail_reasons.append(
+                    f"{mat_mode}, sign={forward_sign:+.0f}: insufficient intersections "
+                    f"(top={valid_counts['top']}/7 bot={valid_counts['bot']}/7 "
+                    f"left={valid_counts['left']}/7 right={valid_counts['right']}/7)"
+                )
+                continue
+            xl, xr = (x_left, x_right) if x_left < x_right else (x_right, x_left)
+            yb, yt = (y_bot, y_top) if y_bot < y_top else (y_top, y_bot)
+            if abs(xr - xl) >= 1e-5 and abs(yt - yb) >= 1e-5:
+                return xl, xr, yb, yt
             fail_reasons.append(
-                f"sign={forward_sign:+.0f}: insufficient intersections "
-                f"(top={valid_counts['top']}/7 bot={valid_counts['bot']}/7 "
-                f"left={valid_counts['left']}/7 right={valid_counts['right']}/7)"
+                f"{mat_mode}, sign={forward_sign:+.0f}: degenerate extent "
+                f"(x=[{xl:.6f},{xr:.6f}] y=[{yb:.6f},{yt:.6f}])"
             )
-            continue
-        xl, xr = (x_left, x_right) if x_left < x_right else (x_right, x_left)
-        yb, yt = (y_bot, y_top) if y_bot < y_top else (y_top, y_bot)
-        if abs(xr - xl) >= 1e-5 and abs(yt - yb) >= 1e-5:
-            return xl, xr, yb, yt
-        fail_reasons.append(
-            f"sign={forward_sign:+.0f}: degenerate extent "
-            f"(x=[{xl:.6f},{xr:.6f}] y=[{yb:.6f},{yt:.6f}])"
-        )
     if debug:
         cam_pos = C.tolist()
         print(
