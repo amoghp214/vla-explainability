@@ -185,6 +185,18 @@ def _configure_narrow_topdown_camera(
     return True
 
 
+def _apply_top_down_camera_from_config(env, config: Dict[str, Any]) -> bool:
+    """Apply top_down_camera YAML to birdview; must run after env.reset() (hard_reset wipes edits)."""
+    td = config.get("top_down_camera") or {}
+    fovy = float(td.get("fovy_deg", 3.0))
+    cam_z = float(td.get("camera_z", 22.0))
+    cam_x = float(td.get("camera_x", -0.2))
+    cam_y = float(td.get("camera_y", 0.0))
+    return _configure_narrow_topdown_camera(
+        env, fovy_deg=fovy, cam_z=cam_z, cam_x=cam_x, cam_y=cam_y
+    )
+
+
 def _fresh_observations(env):
     """Re-render observations from the current sim state (e.g. after extra env.step calls)."""
     inner = env.env
@@ -491,6 +503,17 @@ def record_single_demo(
     for _ in range(10):
         obs, _, _, _ = env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
 
+    # Birdview FOV/position live on mjModel; hard_reset reloads XML on reset(), so re-apply
+    # after reset+stabilize or top-down exports ignore YAML (defaults from scene XML).
+    if top_down_export is not None:
+        td = config.get("top_down_camera") or {}
+        if _apply_top_down_camera_from_config(env, config):
+            print(
+                f"[TOP-DOWN] birdview applied post-reset: fovy={float(td.get('fovy_deg', 3.0))}°, "
+                f"pos=({float(td.get('camera_x', -0.2))}, {float(td.get('camera_y', 0.0))}, "
+                f"{float(td.get('camera_z', 22.0))})"
+            )
+
     max_steps = get_max_rollout_frames(config)
     action_scale = config.get("action_scale", 1.0)
     noise_std = config.get("noise_std", 0.0)
@@ -706,20 +729,8 @@ def record_demo(config: Dict[str, Any]):
         env_args["camera_names"] = ["agentview", "birdview"]
     print("\nInitializing environment...")
     env = OffScreenRenderEnv(**env_args)
-
-    if top_down_export is not None:
-        td_cam = config.get("top_down_camera") or {}
-        fovy = float(td_cam.get("fovy_deg", 3.0))
-        cam_z = float(td_cam.get("camera_z", 22.0))
-        cam_x = float(td_cam.get("camera_x", -0.2))
-        cam_y = float(td_cam.get("camera_y", 0.0))
-        if _configure_narrow_topdown_camera(
-            env, fovy_deg=fovy, cam_z=cam_z, cam_x=cam_x, cam_y=cam_y
-        ):
-            print(
-                f"[TOP-DOWN] birdview (fovy={fovy}°, pos=({cam_x}, {cam_y}, {cam_z})) "
-                "— narrow FOV + high Z ≈ zoom on table"
-            )
+    # Note: do not configure birdview here — record_single_demo's env.reset() (hard_reset)
+    # reloads mjModel from XML and would discard FOV/position before any PNG is saved.
 
     # ---- Load model ----
     print("Loading model...")
