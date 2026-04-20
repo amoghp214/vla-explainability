@@ -362,7 +362,7 @@ def record_single_demo(
         "libero_spatial": 220,
         "libero_object": 280,
         "libero_goal": 300,
-        "libero_10": 520,
+        "libero_10": 520, # TODO: change back to 520
         "libero_90": 400,
     }
     max_steps = max_steps_dict.get(config["task_suite_name"], 200)
@@ -382,6 +382,7 @@ def record_single_demo(
         # ---- Apply / revert temporal perturbations ----
         if temporal_manager is not None:
             prev_active = dict(temporal_manager._active)
+            temporal_manager.perturbation_collision = False
             temporal_manager.step(env, step)
 
             # If perturbation was just applied with no collision, run 10 stabilization
@@ -406,7 +407,6 @@ def record_single_demo(
                                     snap.applied_poses[obj_name] = settled_pose
                                     print(f"[TEMPORAL] Updated applied_pose for '{obj_name}' "
                                           f"after stabilization → {settled_pose[:3]}")
-
                     perturbation_events.append({
                         "step": step, "event": "start",
                         "type": spec.pert_type,
@@ -418,6 +418,24 @@ def record_single_demo(
                         "type": spec.pert_type,
                         "obj": spec.obj_name or spec.distractor_obj_name,
                     })
+            if (temporal_manager.perturbation_collision):
+                # If a perturbation was just applied that caused a collision, we skip the policy step and let the env stabilize for a few frames before the model sees the new state.
+                print(f"  ⚠ Collision detected from temporal perturbation at step {step}. Skipping policy inference for 10 steps to allow stabilization.")
+                for _ in range(10): # Step counter is not incremented
+                    img = preprocess_image(obs, resize_size=256, center_crop=True)
+                    frames.append(np.array(img))
+                    last_gripper_action = actions[-1][-1] if actions else -1.0
+                    obs, _, _, _ = env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, last_gripper_action])
+                # Update applied_poses to post-stabilization position
+                snap = temporal_manager._snapshots.get(i)
+                if snap is not None:
+                    sim = temporal_manager._sim
+                    for obj_name in snap.applied_poses:
+                        settled_pose = _read_object_pose(sim, obj_name)
+                        if settled_pose is not None:
+                            snap.applied_poses[obj_name] = settled_pose
+                            print(f"[TEMPORAL] Updated applied_pose for '{obj_name}' "
+                                    f"after stabilization → {settled_pose[:3]}")
 
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
@@ -479,19 +497,35 @@ def record_single_demo(
 # Save demo videos
 # ---------------------------------------------------------------------------
 
-def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -> None:
-    """Save a list of (H, W, 3) uint8 frames as an MP4 video."""
+def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -> bool:
+    """Save a list of (H, W, 3) uint8 frames as an MP4 video. Returns True on success."""
     if not frames:
         print(f"  ⚠ No frames to save, skipping video.")
-        return
+        return False
+    # Ensure output directory exists
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     h, w, _ = frames[0].shape
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+
+    if not writer.isOpened():
+        print(f"  ⚠ Failed to open VideoWriter for: {output_path}. Video not saved.")
+        return False
+
     for frame in frames:
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         writer.write(frame_bgr)
     writer.release()
-    print(f"  ✓ Saved video: {output_path} ({len(frames)} frames)")
+
+    if os.path.exists(output_path):
+        print(f"  ✓ Saved video: {output_path} ({len(frames)} frames)")
+        return True
+    else:
+        print(f"  ⚠ VideoWriter did not produce file: {output_path}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -591,19 +625,27 @@ def record_demo(config: Dict[str, Any]):
     print(f"✓ Saved {num_demos} demo(s) to {out_file}")
 
     # ---- Save videos ----
-    record_path = config["record_path"]
-    video_dir = os.path.dirname(record_path)
-    video_base = "video"
+    if (config.get("render_videos", True)):
+        record_path = config["record_path"]
+        video_dir = record_path
+        video_base = "video"
 
-    print(f"\nSaving {num_demos} video(s)...")
-    for demo_idx, demo_data in enumerate(all_demos):
-        if num_demos == 1:
-            video_path = os.path.join(video_dir, f"{video_base}.mp4")
-        else:
-            video_path = os.path.join(video_dir, f"{video_base}_demo_{demo_idx}.mp4")
-        save_demo_video(demo_data["frames"], video_path, fps=20)
+        print(f"\nSaving {num_demos} video(s)...")
+        for demo_idx, demo_data in enumerate(all_demos):
+            if num_demos == 1:
+                video_path = os.path.join(video_dir, f"{video_base}.mp4")
+            else:
+                video_path = os.path.join(video_dir, f"{video_base}_demo_{demo_idx}.mp4")
 
-    print("\n✓ Recording and video export complete!")
+            # Ensure directory for this video exists and then attempt to save.
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            ok = save_demo_video(demo_data["frames"], video_path, fps=20)
+            if not ok:
+                print(f"  ⚠ Failed to save video for demo {demo_idx}: {video_path}")
+
+        print("\n✓ Recording and video export complete!")
+    else:
+        print("\n Skipping video export as 'render_videos' is set to False in config.")
 
 
 # ---------------------------------------------------------------------------

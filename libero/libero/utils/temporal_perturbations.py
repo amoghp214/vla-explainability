@@ -469,10 +469,13 @@ def _resolve_placement(
     fixture_colliders: List[str] = []
     highest_fixture_top_z = original_z
 
+    new_xyz_reason_updated_height = [target_x, target_y, original_z, "no_collision", False]
+
     for fname in fixture_names:
         fx, fy = _fixture_xy_centre(sim, fname)
         xy_dist = np.sqrt((target_x - fx)**2 + (target_y - fy)**2)
-        if xy_dist < perturbed_radius:
+        other_radius = _fixture_xy_radius(sim, fname)
+        if xy_dist < perturbed_radius + other_radius:
             # Check if this colliding fixture is an open cavity
             if fname in open_cavity_body_names:
                 cavity = open_cavity_body_names[fname]
@@ -481,7 +484,8 @@ def _resolve_placement(
                 reason = f"placed_in_cavity:{fname}"
                 print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps open cavity "
                       f"'{fname}'. Placing inside at ({cx:.4f}, {cy:.4f}, {final_z:.4f}).")
-                return cx, cy, final_z, reason, True
+                if (new_xyz_reason_updated_height[2] < final_z):
+                    new_xyz_reason_updated_height = [cx, cy, final_z, reason, True]
 
             fixture_colliders.append(fname)
             top_z = _fixture_z_top(sim, fname)
@@ -493,7 +497,8 @@ def _resolve_placement(
         reason = f"stacked_above_fixture:{','.join(fixture_colliders)}"
         print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps fixture(s) {fixture_colliders} "
               f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
-        return target_x, target_y, final_z, reason, True
+        if (new_xyz_reason_updated_height[2] < final_z):
+            new_xyz_reason_updated_height = [target_x, target_y, final_z, reason, True]
 
     # ------------------------------------------------------------------
     # 2. Free-jointed object collision check
@@ -507,7 +512,8 @@ def _resolve_placement(
         if other_pose is None:
             continue
         xy_dist = np.sqrt((target_x - other_pose[0])**2 + (target_y - other_pose[1])**2)
-        if xy_dist < perturbed_radius:
+        other_radius = _object_xy_radius(sim, other)
+        if xy_dist < perturbed_radius + other_radius:
             obj_colliders.append(other)
             other_z_half = _object_z_half_height(sim, other)
             top_z = other_pose[2] + other_z_half
@@ -519,12 +525,13 @@ def _resolve_placement(
         reason = f"stacked_above:{','.join(obj_colliders)}"
         print(f"[TEMPORAL] COLLISION: '{perturbed_obj}' overlaps object(s) {obj_colliders} "
               f"at ({target_x:.4f}, {target_y:.4f}). Stacking → z={final_z:.4f} m.")
-        return target_x, target_y, final_z, reason, True
+        if (new_xyz_reason_updated_height[2] < final_z):
+            new_xyz_reason_updated_height = [target_x, target_y, final_z, reason, True]
 
     # ------------------------------------------------------------------
     # 3. No collision
     # ------------------------------------------------------------------
-    return target_x, target_y, original_z, "no_collision", False
+    return new_xyz_reason_updated_height[0], new_xyz_reason_updated_height[1], new_xyz_reason_updated_height[2]-0.1, new_xyz_reason_updated_height[3], new_xyz_reason_updated_height[4]
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +706,7 @@ class TemporalPerturbationManager:
 
     def step(self, env, step_idx: int):
         sim = self._sim
+        self.perturbation_collision = False
         if sim is None:
             return
         for i, spec in enumerate(self.specs):
@@ -804,7 +812,6 @@ class TemporalPerturbationManager:
         default_z = 0.02
         final_x, final_y, final_z, reason, self.perturbation_collision = _resolve_placement(
             sim, dname, tx, ty, default_z)
-
         ok = _place_object_at_xyz(sim, dname, final_x, final_y, final_z)
         if ok:
             snap.applied_poses[dname] = _read_object_pose(sim, dname)
@@ -918,7 +925,7 @@ def add_hidden_objects_to_bddl(bddl_text: str, hidden_objects: List[Tuple[str, s
     OFFSCREEN_RANGES = "99.9 99.9 100.1 100.1"
 
     for obj_name, obj_type in hidden_objects:
-        region_name = f"{obj_name}_hidden_region"
+        region_name = f"{obj_name}_init_region"
 
         obj_section = re.search(r"(\(:objects\s*\n)((?:.*\n)*?)(\s*\))", bddl_text)
         if obj_section:
