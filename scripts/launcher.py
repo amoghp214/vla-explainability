@@ -233,8 +233,8 @@ class Launcher:
             self._print_random_design_instructions()
             return
         self.dispatch_jobs()
-        if self.config.get("render_videos", True):
-            self.render_videos()
+        # if self.config.get("render_videos", True):
+        #     self.render_videos()
         eval_config = self.config.get("evaluation", {})
         if not eval_config.get("enabled", False):
             print("[INFO] Evaluation was disabled in config; enabling for random-design heatmap.")

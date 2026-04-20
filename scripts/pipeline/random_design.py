@@ -251,21 +251,22 @@ def generate_random_design_perturbations(
                 spec_dict["distractor_object_type"] = np.random.choice(distractor_object_types).item()
             design_x, design_y = x, y
 
-        try:
-            perturbed_bddl = apply_single_perturbation(
-                copy.deepcopy(base_bddl_text),
-                spec_dict,
-                perturbations,
-                init_range_m=init_range_m,
-                max_move_m=fallback_max_move,
-            )
-        except Exception as e:
-            print(f"[WARN] Random design point {pert_id} (x={x:.4f}, y={y:.4f}, chunk={chunk}) failed: {e}")
-            continue
+        # try:
+        #     perturbed_bddl = apply_single_perturbation(
+        #         copy.deepcopy(base_bddl_text),
+        #         spec_dict,
+        #         perturbations,
+        #         init_range_m=init_range_m,
+        #         max_move_m=fallback_max_move,
+        #     )
+        # except Exception as e:
+        #     print(f"[WARN] Random design point {pert_id} (x={x:.4f}, y={y:.4f}, chunk={chunk}) failed: {e}")
+        #     continue
 
         pert_bddl_path = bddl_dir / f"{pert_id}.bddl"
         with open(pert_bddl_path, "w") as f:
-            f.write(perturbed_bddl)
+            # f.write(perturbed_bddl)
+            f.write(base_bddl_text)
 
         spec = copy.deepcopy(temporal_template)
         spec["start_step"] = start_step
@@ -339,8 +340,9 @@ def run_heatmap(
     X_list = []
     Y_list = []
     for pid, (x, y, chunk) in ids_to_xyc.items():
-        r = results.get(pid)
+        r = results.get(pid, None)
         if r is None or "error" in r or "metric" not in r:
+            print(f"Skipping point {pid}: invalid or missing results")
             continue
         # Plot absolute position (original + delta) when origin is provided
         if origin_x is not None and origin_y is not None:
@@ -354,7 +356,7 @@ def run_heatmap(
     # Get results from control perturbation (delta 0,0 -> absolute = origin when origin set)
     assert "control" in results, "Control results not found in analysis results"
     assert "metric" in results["control"], "Control metric not found in analysis results"
-    for c in range(num_temporal_chunks):
+    for c in range(0, num_temporal_chunks):
         if origin_x is not None and origin_y is not None:
             X_list.append([origin_x + 0.0, origin_y + 0.0, c])
         else:
@@ -375,7 +377,8 @@ def run_heatmap(
         bounds_x = (float(train_X_np[:, 0].min()), float(train_X_np[:, 0].max()))
     if bounds_y is None:
         bounds_y = (float(train_X_np[:, 1].min()), float(train_X_np[:, 1].max()))
-    bounds_c = [0, num_temporal_chunks-1 if num_temporal_chunks > 1 else 1]  # prevent divide by 0
+    # bounds_c = [0, num_temporal_chunks-1 if num_temporal_chunks > 1 else 1]  # prevent divide by 0
+    bounds_c = [0, num_temporal_chunks-1] # since when we normalize we check if max > min so we may not need to try to prevent divide by 0
     # When using absolute positions, convert passed-in (delta) bounds to absolute; data-derived bounds are already absolute
     if origin_x is not None and origin_y is not None and bounds_x_passed and bounds_y_passed:
         bounds_x = (origin_x + bounds_x[0], origin_x + bounds_x[1])
@@ -413,7 +416,7 @@ def run_heatmap(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     last_saved_path = out_dir / "heatmap_metric_vs_translation.png"
-    for c in range(num_temporal_chunks):
+    for c in range(0, num_temporal_chunks):
         # keep only rows for the current temporal chunk `c`
         c_mask = torch.isclose(
             train_X[:, 2],
@@ -436,11 +439,12 @@ def run_heatmap(
         elif design_type == "distract":
             title = "VLA metric vs distractor position (x, y) Chunk {} - RMSE: {:.4f}".format(c, rmse)
         plot_heatmap_fn(
-            bounds_dict,
-            model,
-            train_X_norm_c,
-            train_Y_c,
-            title,
+            bounds_dict=bounds_dict,
+            model=model,
+            train_X_norm=train_X_norm_c,
+            train_Y=train_Y_c,
+            title=title,
+            chunk_idx=c,
             step=step,
             cmap="RdBu_r",
             ax=ax,
