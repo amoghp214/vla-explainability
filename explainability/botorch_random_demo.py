@@ -292,6 +292,9 @@ def plot_heatmap(
     grid_real = np.stack([xx.ravel(), yy.ravel(), np.full(xx.size, float(chunk_idx))], axis=1)
     grid_norm = (grid_real - lower) / (upper - lower)
     X_grid = torch.from_numpy(grid_norm).double()
+    print(f"Grid shape: {X_grid.shape}, example point (norm): {X_grid[0]}, example point (real): {grid_real[0]}")
+    print("Unique values in X_grid[:, 2]:", torch.unique(X_grid[:, 2]))
+    # exit()
 
     # Some models (e.g. SaasFullyBayesianSingleTaskGP) use float; cast for compatibility
     ref = None
@@ -332,7 +335,7 @@ def plot_heatmap(
     train_X_real = train_X_norm.numpy() * (upper - lower) + lower
     n_pts = train_X_real.shape[0]
     s = max(1, min(25, 5000 / n_pts))
-    alpha = 0.85 if n_pts <= 80 else max(0.2, 1.2 - 0.002 * n_pts)
+    alpha = 0.85 if n_pts <= 100 else max(0.2, 1.2 - 0.002 * n_pts)
     # draw colored points whose facecolor encodes the true metric, with a black edge
     train_Y = train_Y.detach().cpu().numpy().squeeze()
     if train_Y.ndim > 1:
