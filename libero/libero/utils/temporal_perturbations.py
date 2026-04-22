@@ -84,7 +84,7 @@ FULL_ROLLOUT_END_STEP: int = 99999
 # ---------------------------------------------------------------------------
 # Robot-movement detection threshold (metres, full 3-D XYZ distance).
 # ---------------------------------------------------------------------------
-ROBOT_MOVE_THRESHOLD_M: float = 0.0
+ROBOT_MOVE_THRESHOLD_M: float = 0.01  # 1 cm
 
 # ---------------------------------------------------------------------------
 # Collision resolution constants
