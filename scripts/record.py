@@ -395,7 +395,7 @@ def record_single_demo(
                 if not was_active and now_active:
                     if not temporal_manager.perturbation_collision:
                         # Run stabilization steps without recording them
-                        for _ in range(10):
+                        for _ in range(20):
                             env.step([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
                         # Update applied_poses to post-stabilization position
                         snap = temporal_manager._snapshots.get(i)
@@ -421,7 +421,7 @@ def record_single_demo(
             if (temporal_manager.perturbation_collision):
                 # If a perturbation was just applied that caused a collision, we skip the policy step and let the env stabilize for a few frames before the model sees the new state.
                 print(f"  ⚠ Collision detected from temporal perturbation at step {step}. Skipping policy inference for 10 steps to allow stabilization.")
-                for _ in range(10): # Step counter is not incremented
+                for _ in range(20): # Step counter is not incremented
                     img = preprocess_image(obs, resize_size=256, center_crop=True)
                     frames.append(np.array(img))
                     last_gripper_action = actions[-1][-1] if actions else -1.0
