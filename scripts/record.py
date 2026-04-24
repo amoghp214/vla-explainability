@@ -1,5 +1,5 @@
 """
-Record OpenVLA demonstrations on LIBERO tasks with temporal perturbations.
+Record OpenVLA or VLA0 demonstrations on LIBERO tasks with temporal perturbations.
 
 Extends record.py to support time-windowed mid-rollout perturbations:
   - move    : Teleport object to new XY position for a step window
@@ -69,8 +69,12 @@ Pre-episode collision Z corrections (z_overrides):
 
 import os
 import sys
-import h5py
+import io
+import re
 import json
+import base64
+import urllib.request
+import urllib.error
 import argparse
 import glob
 import yaml
@@ -193,6 +197,136 @@ def load_openvla(task_suite_name, device, cache_dir):
                     vla.norm_stats = json.load(f)
                 print("Loaded norm_stats from cache")
     return processor, vla
+
+
+def _image_to_base64(image: Image.Image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def _parse_vla0_server_response(response: Any) -> str:
+    if isinstance(response, dict):
+        for key in ["text", "output", "results", "prediction", "predictions", "action"]:
+            if key in response:
+                value = response[key]
+                if isinstance(value, list) and value:
+                    return value[0] if isinstance(value[0], str) else json.dumps(value[0])
+                if isinstance(value, str):
+                    return value
+        # Fallback: inspect first string value in dict
+        for value in response.values():
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list) and value and isinstance(value[0], str):
+                return value[0]
+        return json.dumps(response)
+    if isinstance(response, list) and response:
+        return response[0] if isinstance(response[0], str) else json.dumps(response[0])
+    if isinstance(response, str):
+        return response
+    return str(response)
+
+
+class VLA0ServerClient:
+    def __init__(self, server_url: str):
+        self.server_url = server_url.rstrip("/")
+
+    def predict_action(self, prompt: str, image: Image.Image, task_suite_name: str = None, do_sample: bool = False):
+        payload = {
+            "text": prompt,
+            "image_base64": _image_to_base64(image),
+            "do_sample": bool(do_sample),
+        }
+        if task_suite_name:
+            payload["task_suite_name"] = task_suite_name
+
+        request = urllib.request.Request(
+            url=self.server_url + "/predict_base64",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = response.read().decode("utf-8")
+                data = json.loads(body)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"VLA0 server request failed ({exc.code}): {exc.read().decode('utf-8', errors='ignore')}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(f"Failed to call VLA0 server at {self.server_url}: {exc}") from exc
+
+        return _parse_vla0_server_response(data)
+
+
+def load_vla0_server(config: Dict[str, Any]):
+    vla0_cfg = config.get("vla0", {})
+    server_url = vla0_cfg.get("server_url", "http://localhost:10000")
+    print(f"Using VLA0 inference server at {server_url}")
+    return None, VLA0ServerClient(server_url)
+
+
+def load_vla0(config: Dict[str, Any]):
+    vla0_cfg = config.get("vla0", {})
+    deployment_mode = vla0_cfg.get("deployment_mode", "server").lower()
+    if deployment_mode != "server":
+        raise ValueError(
+            f"VLA0 only supports server deployment mode in this script. Got '{deployment_mode}'."
+        )
+    return load_vla0_server(config)
+
+
+def load_model_from_config(config: Dict[str, Any]):
+    model_type = config.get("model", "openvla").lower()
+    if model_type == "openvla":
+        return load_openvla(
+            config["task_suite_name"],
+            config.get("device", "cuda:0"),
+            config.get("cache_dir", None),
+        )
+    if model_type == "vla0":
+        return load_vla0(config)
+    raise ValueError(f"Unsupported model type: {model_type}")
+
+
+def parse_vla0_action_output(action_text: Any, action_dim: int = 7) -> np.ndarray:
+    if isinstance(action_text, np.ndarray):
+        return action_text
+    text = str(action_text)
+    numbers = re.findall(r"-?\d+\.?\d*", text)
+    if len(numbers) < action_dim:
+        raise ValueError(
+            f"Could not parse {action_dim} action values from VLA0 output: '{text}'"
+        )
+    action = np.array([float(n) for n in numbers[:action_dim]], dtype=np.float32)
+    return action
+
+
+def predict_model_action(config: Dict[str, Any], processor, vla, img: Image.Image) -> np.ndarray:
+    model_type = config.get("model", "openvla").lower()
+    prompt_template = None
+    if model_type == "openvla":
+        prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
+        inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
+        action = vla.predict_action(**inputs, unnorm_key=config["task_suite_name"], do_sample=False)
+        return action
+
+    if model_type == "vla0":
+        vla0_cfg = config.get("vla0", {})
+        prompt_template = vla0_cfg.get("prompt_template", "What action should the robot take to {prompt}?")
+        prompt = prompt_template.format(prompt=config["prompt"])
+        raw_output = vla.predict_action(
+            prompt,
+            img,
+            task_suite_name=config.get("task_suite_name"),
+            do_sample=vla0_cfg.get("do_sample", False),
+        )
+        action_dim = int(vla0_cfg.get("action_dim", 7))
+        return parse_vla0_action_output(raw_output, action_dim=action_dim)
+
+    raise ValueError(f"Unsupported model type: {model_type}")
 
 
 def add_gaussian_noise(action, noise_std):
@@ -440,9 +574,7 @@ def record_single_demo(
         # ---- Policy inference ----
         img = preprocess_image(obs, resize_size=256, center_crop=True)
         frames.append(np.array(img))
-        prompt = f"In: What action should the robot take to {config['prompt']}?\nOut:"
-        inputs = processor(prompt, img).to(config.get("device", "cuda:0"), dtype=torch.bfloat16)
-        action = vla.predict_action(**inputs, unnorm_key=config["task_suite_name"], do_sample=False)
+        action = predict_model_action(config, processor, vla, img)
 
         action = normalize_gripper_action(action, binarize=True)
         action = invert_gripper_action(action)
@@ -533,7 +665,7 @@ def save_demo_video(frames: List[np.ndarray], output_path: str, fps: int = 20) -
 # ---------------------------------------------------------------------------
 
 def record_demo(config: Dict[str, Any]):
-    """Record demonstration(s) using OpenVLA, with optional temporal perturbations."""
+    """Record demonstration(s) using OpenVLA or VLA0, with optional temporal perturbations."""
 
     # ---- Prepare BDDL (inject hidden objects if needed) ----
     base_bddl = config["bddl_file"]
@@ -568,11 +700,7 @@ def record_demo(config: Dict[str, Any]):
 
     # ---- Load model ----
     print("Loading model...")
-    processor, vla = load_openvla(
-        config["task_suite_name"],
-        config.get("device", "cuda:0"),
-        config["cache_dir"],
-    )
+    processor, vla = load_model_from_config(config)
 
     # ---- Record all demos ----
     num_demos = config.get("num_demos", 1)
@@ -654,7 +782,7 @@ def record_demo(config: Dict[str, Any]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Record OpenVLA demonstrations with temporal perturbations"
+        description="Record OpenVLA or VLA0 demonstrations with temporal perturbations"
     )
     parser.add_argument("--config", type=str, required=True,
                         help="Path to inference_config.yaml")
@@ -664,7 +792,7 @@ def main():
         config = yaml.safe_load(f)
 
     print("=" * 80)
-    print("OpenVLA LIBERO Recording (with Temporal Perturbations)")
+    print(f"{config.get('model', 'openvla').upper()} LIBERO Recording (with Temporal Perturbations)")
     print("=" * 80)
     print(f"Task suite : {config['task_suite_name']}")
     print(f"BDDL file  : {config['bddl_file']}")

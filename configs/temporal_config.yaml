@@ -5,9 +5,18 @@
 # Base Task Configuration
 # =============================================================================
 model: openvla
+# model: vla0
+
 task_suite_name: libero_10
 device: cuda:0
 cache_dir: /home/hice1/apalasamudram6/scratch/huggingface  # Replace with your cache directory
+
+vla0:
+  deployment_mode: server
+  server_url: http://localhost:10000
+  action_dim: 7
+  prompt_template: "What action should the robot take to {prompt}?"
+  do_sample: false
 
 base_bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
 bddl_file: libero/libero/bddl_files/libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it.bddl
